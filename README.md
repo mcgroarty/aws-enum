@@ -137,11 +137,16 @@ SSO token valid. Enumerating accounts...
 
 ## Configuration
 
-### Customizing Regions
+### Customizing Default Regions
 
-Edit the `REGIONS` list in the script to change which regions are scanned:
+Edit the `REGIONS` list in the script to change the default regions (currently `us-west-2`):
 ```python
-REGIONS = ["us-east-1", "us-west-2", "eu-west-1"]
+REGIONS = ["us-west-2"]
+```
+
+Alternatively, use the `--regions` command-line option to override without editing the script:
+```bash
+./enumerate-elbs.py --regions us-east-1,us-west-2,eu-west-1
 ```
 
 ### Customizing Role Name
@@ -156,8 +161,21 @@ ROLE_NAME = "SecurityAudit"
 1. **Authentication**: Checks for a valid SSO token in the AWS CLI cache. If none exists, triggers SSO login.
 2. **Account Discovery**: Lists all accounts accessible via AWS SSO.
 3. **Role Assumption**: For each account, assumes the `SecurityAudit` role to get temporary credentials.
-4. **Enumeration**: Uses the temporary credentials to query load balancers in each configured region.
-5. **Output**: Displays all load balancers with their key details.
+4. **Enumeration**: Uses the temporary credentials to query load balancers in each specified region.
+5. **Certificate Retrieval** (optional): For each load balancer, queries AWS Certificate Manager (ACM) to get certificate details and domain names.
+6. **Filtering** (optional): Applies filters such as internet-facing only.
+7. **Output**: Displays all load balancers with their key details.
+
+## Command-Line Options
+
+| Option | Description |
+|--------|-------------|
+| `--first-only` | Stop after finding the first account with load balancers (useful for debugging) |
+| `--internet-facing-only` | Show only internet-facing load balancers |
+| `--show-certificates` | Display TLS certificate ARNs attached to load balancers |
+| `--show-certificate-domains` | Display domain names for TLS certificates (implies `--show-certificates`) |
+| `--regions REGIONS` | Comma-separated list of AWS regions to scan (default: us-west-2) |
+| `-h, --help` | Show help message and exit |
 
 ## Troubleshooting
 
@@ -173,8 +191,14 @@ ROLE_NAME = "SecurityAudit"
 
 **No load balancers showing**
 - Verify you have the correct permissions
-- Check that load balancers exist in the configured regions
+- Check that load balancers exist in the specified regions
 - Try `--first-only` flag to test on a single account
+- Verify the regions with `--regions` option
+
+**Certificate domains not showing**
+- Ensure certificates are managed by AWS Certificate Manager (ACM)
+- Verify you have ACM read permissions
+- Certificates imported from external sources may have limited metadata
 
 ## License
 
