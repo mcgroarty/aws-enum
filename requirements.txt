@@ -1,0 +1,8 @@
+# This script uses only Python standard library modules
+# No third-party Python packages required
+
+# System dependency (not installable via pip):
+# - AWS CLI v2 must be installed and configured with SSO
+#   See: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
+
+# Python version requirement: Python 3.9+ (for list[str] type annotations)
