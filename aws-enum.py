@@ -17,19 +17,20 @@ Requirements:
 
 Usage:
     # Enumerate load balancers with default profile
-    ./enumerate-elbs.py loadbalancers
+    ./aws-enum.py loadbalancers
     
     # Use specific SSO profile
-    AWS_PROFILE=my-sso-profile ./enumerate-elbs.py loadbalancers
+    AWS_PROFILE=my-sso-profile ./aws-enum.py loadbalancers
     
     # Show help for available commands
-    ./enumerate-elbs.py --help
+    ./aws-enum.py --help
 
 The script will automatically prompt for SSO login if no valid token is found.
 """
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -43,7 +44,6 @@ REGIONS = ["us-west-2"]
 
 def get_sso_profile() -> str:
     """Get SSO profile from environment or default."""
-    import os
     return os.environ.get("AWS_PROFILE", "default")
 
 
@@ -120,60 +120,39 @@ def run_aws_cli(args: list[str], env: Optional[dict] = None) -> Optional[dict]:
         return None
 
 
+def run_sso_command(args: list[str], access_token: str) -> Optional[dict]:
+    """Run an AWS SSO command with access token and return parsed JSON output."""
+    return run_aws_cli(["sso"] + args + ["--access-token", access_token])
+
+
 def list_accounts(access_token: str) -> list[dict]:
     """List all accounts accessible via SSO."""
-    result = subprocess.run(
-        ["aws", "sso", "list-accounts", "--access-token", access_token, "--output", "json"],
-        capture_output=True,
-        text=True
-    )
-    
-    if result.returncode != 0:
-        print(f"ERROR: Failed to list accounts: {result.stderr}", file=sys.stderr)
+    data = run_sso_command(["list-accounts"], access_token)
+    if data is None:
+        print("ERROR: Failed to list accounts", file=sys.stderr)
         sys.exit(1)
-    
-    return json.loads(result.stdout).get("accountList", [])
+    return data.get("accountList", [])
 
 
 def list_account_roles(account_id: str, access_token: str) -> list[str]:
     """List available roles for an account."""
-    result = subprocess.run(
-        ["aws", "sso", "list-account-roles",
-         "--account-id", account_id,
-         "--access-token", access_token,
-         "--output", "json"],
-        capture_output=True,
-        text=True
-    )
-    
-    if result.returncode != 0:
+    data = run_sso_command(["list-account-roles", "--account-id", account_id], access_token)
+    if data is None:
         return []
-    
-    data = json.loads(result.stdout)
     return [role["roleName"] for role in data.get("roleList", [])]
 
 
 def get_role_credentials(account_id: str, role_name: str, access_token: str) -> Optional[dict]:
     """Get temporary credentials for a role."""
-    result = subprocess.run(
-        ["aws", "sso", "get-role-credentials",
-         "--account-id", account_id,
-         "--role-name", role_name,
-         "--access-token", access_token,
-         "--output", "json"],
-        capture_output=True,
-        text=True
+    data = run_sso_command(
+        ["get-role-credentials", "--account-id", account_id, "--role-name", role_name],
+        access_token
     )
-    
-    if result.returncode != 0:
-        return None
-    
-    return json.loads(result.stdout).get("roleCredentials")
+    return data.get("roleCredentials") if data else None
 
 
 def make_aws_env(credentials: dict) -> dict:
     """Create environment dict with AWS credentials."""
-    import os
     env = dict(os.environ)
     env["AWS_ACCESS_KEY_ID"] = credentials["accessKeyId"]
     env["AWS_SECRET_ACCESS_KEY"] = credentials["secretAccessKey"]
@@ -274,23 +253,14 @@ def list_org_accounts(region: str = "us-east-1") -> Optional[list[dict]]:
     """List all accounts in the organization using AWS Organizations API."""
     data = run_aws_cli(["organizations", "list-accounts", "--region", region])
     return data.get("Accounts", []) if data else None
+
+
 def get_master_account_id() -> Optional[str]:
     """Get the master account ID from AWS Organizations."""
-    try:
-        # Try to get organization info using current credentials
-        result = subprocess.run(
-            ["aws", "organizations", "describe-organization", "--region", "us-east-1", "--output", "json"],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            return data.get("Organization", {}).get("MasterAccountId")
-        return None
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
-        return None
+    data = run_aws_cli(["organizations", "describe-organization", "--region", "us-east-1"])
+    if data:
+        return data.get("Organization", {}).get("MasterAccountId")
+    return None
 
 
 def get_account_roles_with_limited_concurrency(accounts, access_token):
