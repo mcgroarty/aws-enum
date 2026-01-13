@@ -1,0 +1,25 @@
+# Markdownlint configuration
+# See https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+
+# Disable specific rules
+MD013: false  # Line length - allow longer lines
+MD031: false  # Blanks around fences - allow tighter formatting
+MD032: false  # Blanks around lists - allow tighter formatting  
+MD033: false  # Allow inline HTML
+MD036: false  # Emphasis used instead of header - common in troubleshooting
+MD040: false  # Fenced code language - allow code blocks without language
+MD041: false  # First line in file should be a top level header - allow for complex READMEs
+MD060: false  # Table column alignment - allow flexible table formatting
+
+# Configure specific rules
+MD024:
+  # Multiple headers with the same content - allow siblings
+  siblings_only: true
+
+MD025:
+  # Multiple top level headers in the same document
+  level: 1
+
+MD029:
+  # Ordered list item prefix - use "ordered" style (1. 2. 3.)
+  style: "ordered"

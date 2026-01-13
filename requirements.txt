@@ -6,3 +6,11 @@
 #   See: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
 
 # Python version requirement: Python 3.9+ (for list[str] type annotations)
+
+# Development dependencies (optional)
+# Install with: pip install flake8 black pre-commit
+
+# Code quality and formatting
+# flake8>=6.0.0
+# black>=23.0.0
+# pre-commit>=3.0.0

@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """
-AWS Load Balancer Enumeration Tool
+AWS Resource Enumeration Tool
 
-Enumerates Application Load Balancers (ALBs), Network Load Balancers (NLBs),
-Gateway Load Balancers (GWLBs), and Classic ELBs across all AWS accounts
-accessible via AWS SSO.
+Enumerates various AWS resources across all AWS accounts accessible via AWS SSO.
 
 Features:
 - Automatic SSO authentication with token caching
 - Multi-account enumeration using SecurityAudit role
-- Multi-region support (us-east-1, us-west-2, eu-west-1)
-- Lists all load balancer types, schemes, and DNS names
+- Multi-region support
+- Command-based interface for different resource types
 
 Requirements:
 - AWS CLI v2 configured with SSO
@@ -18,11 +16,14 @@ Requirements:
 - SecurityAudit role provisioned in target accounts
 
 Usage:
-    # Use default profile
-    ./enumerate-elbs.py
+    # Enumerate load balancers with default profile
+    ./enumerate-elbs.py loadbalancers
     
     # Use specific SSO profile
-    AWS_PROFILE=my-sso-profile ./enumerate-elbs.py
+    AWS_PROFILE=my-sso-profile ./enumerate-elbs.py loadbalancers
+    
+    # Show help for available commands
+    ./enumerate-elbs.py --help
 
 The script will automatically prompt for SSO login if no valid token is found.
 """
@@ -296,54 +297,15 @@ def get_certificate_domains(cert_arn: str, region: str, env: dict) -> list[str]:
     return domains
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Enumerate ALBs, NLBs, and Classic ELBs across all AWS SSO accounts",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""Examples:
-  %(prog)s                           # Enumerate all accounts
-  %(prog)s --first-only              # Stop after first account with load balancers
-  %(prog)s --internet-facing-only    # Show only internet-facing load balancers
-  %(prog)s --show-certificates       # Display TLS certificates attached to load balancers
-  %(prog)s --show-certificate-domains # Display domain names for TLS certificates
-  AWS_PROFILE=prod %(prog)s          # Use specific SSO profile
-        """
-    )
-    parser.add_argument(
-        "--first-only",
-        action="store_true",
-        help="Stop after finding the first account with load balancers (useful for debugging)"
-    )
-    parser.add_argument(
-        "--internet-facing-only",
-        action="store_true",
-        help="Show only internet-facing load balancers"
-    )
-    parser.add_argument(
-        "--show-certificates",
-        action="store_true",
-        help="Display TLS certificates attached to load balancers"
-    )
-    parser.add_argument(
-        "--show-certificate-domains",
-        action="store_true",
-        help="Display domain names for TLS certificates (implies --show-certificates)"
-    )
-    parser.add_argument(
-        "--regions",
-        type=str,
-        default=",".join(REGIONS),
-        help=f"Comma-separated list of AWS regions to scan (default: {','.join(REGIONS)})"
-    )
-    args = parser.parse_args()
-    
-    # Parse regions from command line
-    regions = [r.strip() for r in args.regions.split(',') if r.strip()]
-    
+def enumerate_loadbalancers(args):
+    """Enumerate load balancers across all AWS SSO accounts."""
     profile = get_sso_profile()
     access_token = get_access_token(profile)
     
     print("SSO token valid. Enumerating accounts...\n")
+    
+    # Parse regions from command line
+    regions = [r.strip() for r in args.regions.split(',') if r.strip()]
     
     accounts = list_accounts(access_token)
     
@@ -443,6 +405,85 @@ def main():
         if args.first_only and found_load_balancers:
             print("--first-only specified. Stopping after first account with load balancers.")
             break
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Enumerate various AWS resources across all AWS SSO accounts",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Available commands:
+  loadbalancers    Enumerate ALBs, NLBs, and Classic ELBs
+
+For help on a specific command, use:
+  %(prog)s COMMAND --help
+
+Examples:
+  %(prog)s loadbalancers                    # List all load balancers
+  %(prog)s loadbalancers --help             # Show load balancer options
+  AWS_PROFILE=prod %(prog)s loadbalancers   # Use specific SSO profile
+        """
+    )
+    
+    subparsers = parser.add_subparsers(
+        dest='command',
+        help='Available commands',
+        metavar='COMMAND'
+    )
+    subparsers.required = True
+    
+    # Load balancer command
+    lb_parser = subparsers.add_parser(
+        'loadbalancers',
+        help='Enumerate ALBs, NLBs, and Classic ELBs',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  %(prog)s                                         # Enumerate all accounts
+  %(prog)s --first-only                            # Stop after first account with load balancers
+  %(prog)s --internet-facing-only                  # Show only internet-facing load balancers
+  %(prog)s --show-certificates                     # Display TLS certificates attached to load balancers
+  %(prog)s --show-certificate-domains              # Display domain names for TLS certificates
+  AWS_PROFILE=prod %(prog)s                        # Use specific SSO profile
+        """
+    )
+    lb_parser.add_argument(
+        "--first-only",
+        action="store_true",
+        help="Stop after finding the first account with load balancers (useful for debugging)"
+    )
+    lb_parser.add_argument(
+        "--internet-facing-only",
+        action="store_true",
+        help="Show only internet-facing load balancers"
+    )
+    lb_parser.add_argument(
+        "--show-certificates",
+        action="store_true",
+        help="Display TLS certificates attached to load balancers"
+    )
+    lb_parser.add_argument(
+        "--show-certificate-domains",
+        action="store_true",
+        help="Display domain names for TLS certificates (implies --show-certificates)"
+    )
+    lb_parser.add_argument(
+        "--regions",
+        type=str,
+        default=",".join(REGIONS),
+        help=f"Comma-separated list of AWS regions to scan (default: {','.join(REGIONS)})"
+    )
+    
+    try:
+        args = parser.parse_args()
+    except SystemExit as e:
+        if e.code == 2:  # Argument parsing error
+            print("\nAvailable commands:")
+            print("  loadbalancers    Enumerate ALBs, NLBs, and Classic ELBs")
+            print(f"\nFor more information, run: {parser.prog} --help")
+        raise
+    
+    # Route to appropriate command handler
+    if args.command == 'loadbalancers':
+        enumerate_loadbalancers(args)
 
 
 if __name__ == "__main__":
