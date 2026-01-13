@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Install pre-commit hooks for the aws-enumerate-elbs repository
+# Install pre-commit hooks for the aws-enum repository
 
 set -e
 

@@ -1,8 +1,10 @@
-# aws-enumerate-elbs
+# aws-enum
 
 AWS resource enumeration tool that provides command-based access to enumerate various AWS resources across all accounts accessible via AWS SSO.
 
-Currently supports load balancer enumeration (ALBs, NLBs, GWLBs, and Classic ELBs) with a modular command structure designed for future expansion to other AWS resources.
+Currently supports:
+- **Load Balancers**: ALBs, NLBs, GWLBs, and Classic ELBs
+- **ECS**: Running ECS containers across clusters
 
 ## Quick Start
 
@@ -16,22 +18,28 @@ Currently supports load balancer enumeration (ALBs, NLBs, GWLBs, and Classic ELB
 # Enumerate all load balancers
 ./aws-enum.py loadbalancers
 
+# Enumerate all ECS containers
+./aws-enum.py ecs
+
 # Get help for specific commands
 ./aws-enum.py accounts --help
 ./aws-enum.py loadbalancers --help
+./aws-enum.py ecs --help
 ```
 
 ## Features
 
 - **Automatic SSO Authentication**: Handles SSO token caching and automatically prompts for login when needed
-- **Multi-Account Support**: Enumerates load balancers across all accounts accessible through AWS SSO
+- **Multi-Account Support**: Enumerates resources across all accounts accessible through AWS SSO
 - **Optimized Performance**: Uses 4-way concurrency for account role checking to improve enumeration speed while maintaining API reliability
 - **Flexible Region Scanning**: Scan any AWS regions via `--regions` flag (default: us-west-2)
+- **Account Filtering**: Filter to specific accounts by name or ID with `--accounts`
 - **All Load Balancer Types**: Lists ALBs, NLBs, GWLBs, and Classic ELBs
-- **Detailed Output**: Shows load balancer name, type, scheme (internet-facing/internal), and DNS name
+- **ECS Container Enumeration**: Lists running ECS tasks across clusters with age filtering
+- **Detailed Output**: Shows resource details including names, types, and configuration
 - **TLS Certificate Information**: Display certificate ARNs and domain names with `--show-certificates` and `--show-certificate-domains`
 - **Filtering Options**: Filter for internet-facing load balancers only with `--internet-facing-only`
-- **Debug Mode**: `--first-only` flag to stop after the first account with load balancers
+- **Debug Mode**: `--first-only` flag to stop after the first account with results
 
 ## Requirements
 
@@ -44,8 +52,8 @@ Currently supports load balancer enumeration (ALBs, NLBs, GWLBs, and Classic ELB
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/mcgroarty/aws-enumerate-elbs.git
-   cd aws-enumerate-elbs
+   git clone https://github.com/secondlife/aws-enum.git
+   cd aws-enum
    ```
 
 2. Ensure AWS CLI v2 is installed and SSO is configured:
@@ -234,7 +242,8 @@ The tool uses a command-based interface. Use `./aws-enum.py --help` to see avail
 | Command | Description |
 |---------|-------------|
 | `accounts` | List all AWS SSO accounts and available roles |
-| `loadbalancers` | Enumerate ALBs, NLBs, GWLBs, and Classic ELBs |
+| `loadbalancers` | Enumerate ALBs, NLBs, and Classic ELBs |
+| `ecs` | Enumerate running ECS containers |
 
 ### Accounts Command
 
@@ -272,6 +281,18 @@ The accounts command shows:
 | `--internet-facing-only` | Show only internet-facing load balancers |
 | `--show-certificates` | Display TLS certificate ARNs attached to load balancers |
 | `--show-certificate-domains` | Display domain names for TLS certificates (implies `--show-certificates`) |
+| `--accounts ACCOUNTS` | Comma-separated list of account names or IDs to check (default: all accounts) |
+| `--regions REGIONS` | Comma-separated list of AWS regions to scan (default: us-west-2) |
+| `-h, --help` | Show help message and exit |
+
+### ECS Command Options
+
+| Option | Description |
+|--------|-------------|
+| `--first-only` | Stop after finding the first account with ECS containers (useful for debugging) |
+| `--show-tags` | Display tags for ECS tasks |
+| `--min-age-days DAYS` | Only show tasks older than this many days (e.g., 7 or 0.5 for 12 hours) |
+| `--accounts ACCOUNTS` | Comma-separated list of account names or IDs to check (default: all accounts) |
 | `--regions REGIONS` | Comma-separated list of AWS regions to scan (default: us-west-2) |
 | `-h, --help` | Show help message and exit |
 
