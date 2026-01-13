@@ -1029,23 +1029,11 @@ def enumerate_route53(args):
                         elif "ResourceRecords" in record:
                             # Standard record
                             values = [rr.get("Value", "") for rr in record.get("ResourceRecords", [])]
-                            target = values[0] if len(values) == 1 else f"[{len(values)} values]"
                             record_display_type = record_type
                             # Check if external (only for CNAME, MX types)
-                            is_external = False
-                            if record_type in ["CNAME", "MX"]:
-                                # For MX, extract the server part (after priority)
-                                check_target = target.split()[-1] if record_type == "MX" else target
-                                is_external = not is_aws_target(check_target)
+                            # We'll check each value individually below
                         else:
                             continue
-                        
-                        # Skip non-external if --external-only
-                        if args.external_only and not is_external:
-                            continue
-                        
-                        if is_external:
-                            external_count += 1
                         
                         # Format the record name
                         # Use FQDN if --fqdn specified, otherwise shorten for readability
@@ -1058,24 +1046,67 @@ def enumerate_route53(args):
                         else:
                             display_name = record_name
                         
-                        # Write to CSV if enabled (always uses FQDN)
-                        if csv_writer:
-                            csv_writer.writerow([
-                                account_name,
-                                account_id,
-                                zone_name,
-                                zone_id,
-                                zone_type,
-                                record_display_type,
-                                record_name,  # Always FQDN in CSV
-                                target,
-                                'yes' if is_external else 'no'
-                            ])
-                        
-                        # Print record
-                        external_flag = " 🔶 External" if is_external else ""
-                        print(f"    {record_display_type:6} {display_name:30} → {target}{external_flag}")
-                        shown_count += 1
+                        # Handle ALIAS records (single value)
+                        if is_alias:
+                            target = record["AliasTarget"].get("DNSName", "").rstrip(".")
+                            is_external = False  # ALIAS records are always AWS-managed
+                            
+                            # Skip non-external if --external-only
+                            if args.external_only and not is_external:
+                                continue
+                            
+                            # Write to CSV if enabled
+                            if csv_writer:
+                                csv_writer.writerow([
+                                    account_name,
+                                    account_id,
+                                    zone_name,
+                                    zone_id,
+                                    zone_type,
+                                    record_display_type,
+                                    record_name,
+                                    target,
+                                    'no'
+                                ])
+                            
+                            # Print record
+                            print(f"    {record_display_type:6} {display_name:30} → {target}")
+                            shown_count += 1
+                        else:
+                            # Handle standard records (potentially multiple values)
+                            for value in values:
+                                target = value
+                                is_external = False
+                                if record_type in ["CNAME", "MX"]:
+                                    # For MX, extract the server part (after priority)
+                                    check_target = target.split()[-1] if record_type == "MX" else target
+                                    is_external = not is_aws_target(check_target)
+                                
+                                # Skip non-external if --external-only
+                                if args.external_only and not is_external:
+                                    continue
+                                
+                                if is_external:
+                                    external_count += 1
+                                
+                                # Write to CSV if enabled (always uses FQDN)
+                                if csv_writer:
+                                    csv_writer.writerow([
+                                        account_name,
+                                        account_id,
+                                        zone_name,
+                                        zone_id,
+                                        zone_type,
+                                        record_display_type,
+                                        record_name,  # Always FQDN in CSV
+                                        target,
+                                        'yes' if is_external else 'no'
+                                    ])
+                                
+                                # Print record
+                                external_flag = " 🔶 External" if is_external else ""
+                                print(f"    {record_display_type:6} {display_name:30} → {target}{external_flag}")
+                                shown_count += 1
                     
                     if args.external_only and external_count == 0:
                         print(f"    (no external records)")
