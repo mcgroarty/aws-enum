@@ -8,17 +8,17 @@ Currently supports load balancer enumeration (ALBs, NLBs, GWLBs, and Classic ELB
 
 ```bash
 # View available commands
-./enumerate-elbs.py --help
+./aws-enum.py --help
 
 # List all accounts and roles
-./enumerate-elbs.py accounts
+./aws-enum.py accounts
 
 # Enumerate all load balancers
-./enumerate-elbs.py loadbalancers
+./aws-enum.py loadbalancers
 
 # Get help for specific commands
-./enumerate-elbs.py accounts --help
-./enumerate-elbs.py loadbalancers --help
+./aws-enum.py accounts --help
+./aws-enum.py loadbalancers --help
 ```
 
 ## Features
@@ -89,13 +89,13 @@ npm install -g markdownlint-cli
 
 ```bash
 # Check Python syntax
-python3 -m py_compile enumerate-elbs.py
+python3 -m py_compile aws-enum.py
 
 # Run Python linting
-flake8 --max-line-length=88 enumerate-elbs.py
+flake8 --max-line-length=88 aws-enum.py
 
 # Format Python code (optional)
-black --line-length=88 enumerate-elbs.py
+black --line-length=88 aws-enum.py
 
 # Lint markdown files
 markdownlint --config .markdownlint.yaml README.md
@@ -107,55 +107,55 @@ markdownlint --config .markdownlint.yaml README.md
 
 **View available commands:**
 ```bash
-./enumerate-elbs.py --help
+./aws-enum.py --help
 ```
 
 **Enumerate load balancers** with your default SSO profile (scans us-west-2 by default):
 ```bash
-./enumerate-elbs.py loadbalancers
+./aws-enum.py loadbalancers
 ```
 
 ### Load Balancer Command Options
 
 **Get help for load balancer command:**
 ```bash
-./enumerate-elbs.py loadbalancers --help
+./aws-enum.py loadbalancers --help
 ```
 
 **Scan specific regions** (comma-separated):
 ```bash
-./enumerate-elbs.py loadbalancers --regions us-east-1,us-west-2,eu-west-1
+./aws-enum.py loadbalancers --regions us-east-1,us-west-2,eu-west-1
 ```
 
 **Use a specific AWS SSO profile:**
 ```bash
-AWS_PROFILE=my-sso-profile ./enumerate-elbs.py loadbalancers
+AWS_PROFILE=my-sso-profile ./aws-enum.py loadbalancers
 ```
 
 **Filter internet-facing load balancers:**
 ```bash
-./enumerate-elbs.py loadbalancers --internet-facing-only
+./aws-enum.py loadbalancers --internet-facing-only
 ```
 
 **Show TLS certificates:**
 ```bash
-./enumerate-elbs.py loadbalancers --show-certificates
+./aws-enum.py loadbalancers --show-certificates
 ```
 
 **Show certificate domain names:**
 ```bash
-./enumerate-elbs.py loadbalancers --show-certificate-domains
+./aws-enum.py loadbalancers --show-certificate-domains
 ```
 
 **Combined options:**
 ```bash
 # Show internet-facing load balancers with certificate domains in us-west-2
-./enumerate-elbs.py loadbalancers --internet-facing-only --show-certificate-domains --regions us-west-2
+./aws-enum.py loadbalancers --internet-facing-only --show-certificate-domains --regions us-west-2
 ```
 
 **Debug mode** (stop after first account with load balancers):
 ```bash
-./enumerate-elbs.py loadbalancers --first-only
+./aws-enum.py loadbalancers --first-only
 ```
 
 ## Example Output
@@ -205,7 +205,7 @@ REGIONS = ["us-west-2"]
 
 Alternatively, use the `--regions` command-line option to override without editing the script:
 ```bash
-./enumerate-elbs.py loadbalancers --regions us-east-1,us-west-2,eu-west-1
+./aws-enum.py loadbalancers --regions us-east-1,us-west-2,eu-west-1
 ```
 
 ### Customizing Role Name
@@ -227,7 +227,7 @@ ROLE_NAME = "SecurityAudit"
 
 ## Command Structure
 
-The tool uses a command-based interface. Use `./enumerate-elbs.py --help` to see available commands.
+The tool uses a command-based interface. Use `./aws-enum.py --help` to see available commands.
 
 ### Available Commands
 
@@ -240,22 +240,22 @@ The tool uses a command-based interface. Use `./enumerate-elbs.py --help` to see
 
 **List all accounts (simple view):**
 ```bash
-./enumerate-elbs.py accounts
+./aws-enum.py accounts
 ```
 
 **Show detailed role information:**
 ```bash
-./enumerate-elbs.py accounts --show-roles
+./aws-enum.py accounts --show-roles
 ```
 
 **Include organization-wide account list:**
 ```bash
-./enumerate-elbs.py accounts --include-org
+./aws-enum.py accounts --include-org
 ```
 
 **Use with specific AWS profile:**
 ```bash
-AWS_PROFILE=my-sso-profile ./enumerate-elbs.py accounts
+AWS_PROFILE=my-sso-profile ./aws-enum.py accounts
 ```
 
 The accounts command shows:
@@ -290,7 +290,7 @@ The accounts command shows:
 **No load balancers showing**
 - Verify you have the correct permissions
 - Check that load balancers exist in the specified regions
-- Try `./enumerate-elbs.py loadbalancers --first-only` flag to test on a single account
+- Try `./aws-enum.py loadbalancers --first-only` flag to test on a single account
 - Verify the regions with `--regions` option
 
 **Certificate domains not showing**

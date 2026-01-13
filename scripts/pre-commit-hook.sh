@@ -9,24 +9,36 @@ echo "🔍 Running pre-commit checks..."
 
 # Check Python syntax
 echo "  ✓ Checking Python syntax..."
-python3 -m py_compile enumerate-elbs.py || {
-    echo "  ❌ Python syntax error in enumerate-elbs.py"
-    exit 1
-}
+for py_file in *.py; do
+    if [ -f "$py_file" ]; then
+        python3 -m py_compile "$py_file" || {
+            echo "  ❌ Python syntax error in $py_file"
+            exit 1
+        }
+    fi
+done
 
 # Check for basic Python issues
 echo "  ✓ Checking for basic Python issues..."
-python3 -m flake8 --max-line-length=88 --extend-ignore=E203,W503 enumerate-elbs.py || {
-    echo "  ⚠️  flake8 warnings found (not blocking commit)"
-}
+for py_file in *.py; do
+    if [ -f "$py_file" ]; then
+        python3 -m flake8 --max-line-length=88 --extend-ignore=E203,W503 "$py_file" || {
+            echo "  ⚠️  flake8 warnings found in $py_file (not blocking commit)"
+        }
+    fi
+done
 
 # Check for common markdown issues if markdownlint is available
 if command -v markdownlint >/dev/null 2>&1; then
     echo "  ✓ Checking markdown files..."
-    markdownlint --config .markdownlint.yaml README.md || {
-        echo "  ❌ Markdown linting failed"
-        exit 1
-    }
+    for md_file in *.md *.markdown; do
+        if [ -f "$md_file" ]; then
+            markdownlint --config .markdownlint.yaml "$md_file" || {
+                echo "  ❌ Markdown linting failed for $md_file"
+                exit 1
+            }
+        fi
+    done
 else
     echo "  ⚠️  markdownlint not found - skipping markdown checks"
     echo "     Install with: npm install -g markdownlint-cli"
