@@ -2,6 +2,27 @@
 
 AWS resource enumeration tool that provides command-based access to enumerate various AWS resources across all accounts accessible via AWS SSO.
 
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Development Setup](#development-setup)
+- [Usage](#usage)
+- [Example Output](#example-output)
+- [Configuration](#configuration)
+- [How It Works](#how-it-works)
+- [Command Structure](#command-structure)
+  - [Available Commands](#available-commands)
+  - [Accounts Command](#accounts-command)
+  - [Load Balancer Command Options](#load-balancer-command-options)
+  - [ECS Command Options](#ecs-command-options)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
+
+## Supported Resources
+
 Currently supports:
 - **Load Balancers**: ALBs, NLBs, GWLBs, and Classic ELBs
 - **ECS**: Running ECS containers across clusters
@@ -323,4 +344,4 @@ The accounts command shows:
 
 ## License
 
-MIT
+Apache License 2.0
