@@ -550,8 +550,33 @@ def enumerate_loadbalancers(args):
     # Parse regions from command line
     regions = [r.strip() for r in args.regions.split(',') if r.strip()]
     
+    # Parse account filter if specified
+    account_filter = None
+    if args.accounts:
+        account_filter = set(a.strip().lower() for a in args.accounts.split(',') if a.strip())
+    
     # Get accounts with roles using shared function
     enumerable_accounts = get_enumerable_accounts(access_token)
+    
+    # Filter accounts if specified
+    if account_filter:
+        filtered_accounts = []
+        for account, roles, is_master in enumerable_accounts:
+            account_id = account["accountId"]
+            account_name = account.get("accountName", "Unknown")
+            # Match on account ID or account name (case-insensitive)
+            if account_id.lower() in account_filter or account_name.lower() in account_filter:
+                filtered_accounts.append((account, roles, is_master))
+        
+        if not filtered_accounts:
+            print(f"No accounts matched filter: {args.accounts}")
+            print("\nAvailable accounts:")
+            for account, roles, is_master in enumerable_accounts:
+                print(f"  {account.get('accountName', 'Unknown')} ({account['accountId']})")
+            return
+        
+        enumerable_accounts = filtered_accounts
+        print(f"Filtering to {len(enumerable_accounts)} account(s): {args.accounts}\n")
     
     for account, roles, is_master in enumerable_accounts:
         account_id = account["accountId"]
@@ -706,6 +731,8 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
   %(prog)s                                         # Enumerate all accounts
+  %(prog)s --accounts "SL Production,SL Staging"   # Check specific accounts only
+  %(prog)s --accounts 303953789704                 # Check by account ID
   %(prog)s --first-only                            # Stop after first account with load balancers
   %(prog)s --internet-facing-only                  # Show only internet-facing load balancers
   %(prog)s --show-certificates                     # Display TLS certificates attached to load balancers
@@ -732,6 +759,12 @@ Examples:
         "--show-certificate-domains",
         action="store_true",
         help="Display domain names for TLS certificates (implies --show-certificates)"
+    )
+    lb_parser.add_argument(
+        "--accounts",
+        type=str,
+        default=None,
+        help="Comma-separated list of account names or IDs to check (default: all accounts)"
     )
     lb_parser.add_argument(
         "--regions",
