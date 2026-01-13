@@ -239,11 +239,13 @@ The tool uses a command-based interface. Use `./aws-enum.py --help` to see avail
 
 ### Available Commands
 
+<!-- Keep commands sorted alphabetically -->
 | Command | Description |
 |---------|-------------|
 | `accounts` | List all AWS SSO accounts and available roles |
-| `loadbalancers` | Enumerate ALBs, NLBs, and Classic ELBs |
 | `ecs` | Enumerate running ECS containers |
+| `loadbalancers` | Enumerate ALBs, NLBs, and Classic ELBs |
+| `route53` | Enumerate Route53 hosted zones |
 
 ### Accounts Command
 

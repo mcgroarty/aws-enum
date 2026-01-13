@@ -329,6 +329,16 @@ def list_org_accounts(region: str = "us-east-1") -> Optional[list[dict]]:
     return data.get("Accounts", []) if data else None
 
 
+# ============================================================================
+# Route53 Functions
+# ============================================================================
+
+def list_hosted_zones(env: dict) -> list[dict]:
+    """List all Route53 hosted zones."""
+    data = run_aws_cli(["route53", "list-hosted-zones"], env)
+    return data.get("HostedZones", []) if data else []
+
+
 def get_master_account_id() -> Optional[str]:
     """Get the master account ID from AWS Organizations."""
     data = run_aws_cli(["organizations", "describe-organization", "--region", "us-east-1"])
@@ -816,23 +826,108 @@ def enumerate_ecs(args):
             break
 
 
+def enumerate_route53(args):
+    """Enumerate Route53 hosted zones across all AWS SSO accounts."""
+    profile = get_sso_profile()
+    access_token = get_access_token(profile)
+    
+    print("SSO token valid. Enumerating Route53 hosted zones...\n")
+    
+    # Parse account filter if specified
+    account_filter = None
+    if args.accounts:
+        account_filter = set(a.strip().lower() for a in args.accounts.split(',') if a.strip())
+    
+    # Get accounts with roles using shared function
+    enumerable_accounts = get_enumerable_accounts(access_token)
+    
+    # Filter accounts if specified
+    if account_filter:
+        filtered_accounts = []
+        for account, roles, is_master in enumerable_accounts:
+            account_id = account["accountId"]
+            account_name = account.get("accountName", "Unknown")
+            if account_id.lower() in account_filter or account_name.lower() in account_filter:
+                filtered_accounts.append((account, roles, is_master))
+        
+        if not filtered_accounts:
+            print(f"No accounts matched filter: {args.accounts}")
+            print("\nAvailable accounts:")
+            for account, roles, is_master in enumerable_accounts:
+                print(f"  {account.get('accountName', 'Unknown')} ({account['accountId']})")
+            return
+        
+        enumerable_accounts = filtered_accounts
+        print(f"Filtering to {len(enumerable_accounts)} account(s): {args.accounts}\n")
+    
+    for account, roles, is_master in enumerable_accounts:
+        account_id = account["accountId"]
+        account_name = account.get("accountName", "Unknown")
+        
+        print(f"=== {account_name} ({account_id}) ===")
+        
+        # Check for SecurityAudit role
+        if ROLE_NAME not in roles:
+            print(f"  ERROR: {ROLE_NAME} role not provisioned. Skipping.")
+            print(f"  Available roles: {', '.join(roles)}")
+            print()
+            continue
+        
+        # Get credentials
+        credentials = get_role_credentials(account_id, ROLE_NAME, access_token)
+        
+        if not credentials:
+            print(f"  ERROR: Failed to get credentials for {ROLE_NAME}")
+            print()
+            continue
+        
+        env = make_aws_env(credentials)
+        
+        # Enumerate Route53 hosted zones (global service, no region needed)
+        hosted_zones = list_hosted_zones(env)
+        found_zones = False
+        
+        if hosted_zones:
+            print("  Hosted Zones:")
+            for zone in hosted_zones:
+                zone_name = zone.get("Name", "Unknown").rstrip(".")
+                zone_id = zone.get("Id", "").replace("/hostedzone/", "")
+                record_count = zone.get("ResourceRecordSetCount", 0)
+                is_private = zone.get("Config", {}).get("PrivateZone", False)
+                zone_type = "private" if is_private else "public"
+                
+                print(f"    {zone_name:50} {zone_id:20} {zone_type:8} {record_count:4} records")
+                found_zones = True
+        else:
+            print("  No hosted zones found")
+        
+        print()
+        
+        # Exit after first account with zones if --first-only is set
+        if args.first_only and found_zones:
+            print("--first-only specified. Stopping after first account with hosted zones.")
+            break
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Enumerate various AWS resources across all AWS SSO accounts",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        # Keep commands sorted alphabetically
         epilog="""Available commands:
   accounts         List all AWS SSO accounts and available roles
-  loadbalancers    Enumerate ALBs, NLBs, and Classic ELBs
   ecs              Enumerate running ECS containers
+  loadbalancers    Enumerate ALBs, NLBs, and Classic ELBs
+  route53          Enumerate Route53 hosted zones
 
 For help on a specific command, use:
   %(prog)s COMMAND --help
 
 Examples:
   %(prog)s accounts                         # List all accounts and roles
-  %(prog)s loadbalancers                    # List all load balancers
   %(prog)s ecs                              # List all ECS containers
-  %(prog)s ecs --help                       # Show ECS options
+  %(prog)s loadbalancers                    # List all load balancers
+  %(prog)s route53                          # List all Route53 hosted zones
   AWS_PROFILE=prod %(prog)s accounts        # Use specific SSO profile
         """
     )
@@ -843,6 +938,10 @@ Examples:
         metavar='COMMAND'
     )
     subparsers.required = True
+    
+    # =========================================================================
+    # Subcommands (keep sorted alphabetically)
+    # =========================================================================
     
     # Accounts command
     accounts_parser = subparsers.add_parser(
@@ -866,6 +965,51 @@ Examples:
         "--include-org",
         action="store_true",
         help="Include organization-wide account listing (requires AWS Organizations permissions)"
+    )
+    
+    # ECS command
+    ecs_parser = subparsers.add_parser(
+        'ecs',
+        help='Enumerate running ECS containers',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  %(prog)s                                         # Enumerate all accounts
+  %(prog)s --accounts "Production,Staging"         # Check specific accounts only
+  %(prog)s --accounts 123456789012                 # Check by account ID(s)
+  %(prog)s --first-only                            # Stop after first account with containers
+  %(prog)s --show-tags                             # Display task tags
+  %(prog)s --min-age-days 7                        # Only show tasks older than 7 days
+  %(prog)s --min-age-days 0.5                      # Only show tasks older than 12 hours
+  AWS_PROFILE=prod %(prog)s                        # Use specific SSO profile
+        """
+    )
+    ecs_parser.add_argument(
+        "--first-only",
+        action="store_true",
+        help="Stop after finding the first account with ECS containers (useful for debugging)"
+    )
+    ecs_parser.add_argument(
+        "--show-tags",
+        action="store_true",
+        help="Display tags for ECS tasks"
+    )
+    ecs_parser.add_argument(
+        "--min-age-days",
+        type=float,
+        default=None,
+        help="Only show tasks older than this many days (e.g., 7 or 0.5 for 12 hours)"
+    )
+    ecs_parser.add_argument(
+        "--accounts",
+        type=str,
+        default=None,
+        help="Comma-separated list of account names or IDs to check (default: all accounts)"
+    )
+    ecs_parser.add_argument(
+        "--regions",
+        type=str,
+        default=",".join(REGIONS),
+        help=f"Comma-separated list of AWS regions to scan (default: {','.join(REGIONS)})"
     )
     
     # Load balancer command
@@ -917,57 +1061,41 @@ Examples:
         help=f"Comma-separated list of AWS regions to scan (default: {','.join(REGIONS)})"
     )
     
-    # ECS command
-    ecs_parser = subparsers.add_parser(
-        'ecs',
-        help='Enumerate running ECS containers',
+    # Route53 command
+    route53_parser = subparsers.add_parser(
+        'route53',
+        help='Enumerate Route53 hosted zones',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
   %(prog)s                                         # Enumerate all accounts
   %(prog)s --accounts "Production,Staging"         # Check specific accounts only
   %(prog)s --accounts 123456789012                 # Check by account ID(s)
-  %(prog)s --first-only                            # Stop after first account with containers
-  %(prog)s --show-tags                             # Display task tags  %(prog)s --min-age-days 7                        # Only show tasks older than 7 days
-  %(prog)s --min-age-days 0.5                      # Only show tasks older than 12 hours  AWS_PROFILE=prod %(prog)s                        # Use specific SSO profile
+  %(prog)s --first-only                            # Stop after first account with hosted zones
+  AWS_PROFILE=prod %(prog)s                        # Use specific SSO profile
         """
     )
-    ecs_parser.add_argument(
+    route53_parser.add_argument(
         "--first-only",
         action="store_true",
-        help="Stop after finding the first account with ECS containers (useful for debugging)"
+        help="Stop after finding the first account with hosted zones (useful for debugging)"
     )
-    ecs_parser.add_argument(
-        "--show-tags",
-        action="store_true",
-        help="Display tags for ECS tasks"
-    )
-    ecs_parser.add_argument(
-        "--min-age-days",
-        type=float,
-        default=None,
-        help="Only show tasks older than this many days (e.g., 7 or 0.5 for 12 hours)"
-    )
-    ecs_parser.add_argument(
+    route53_parser.add_argument(
         "--accounts",
         type=str,
         default=None,
         help="Comma-separated list of account names or IDs to check (default: all accounts)"
-    )
-    ecs_parser.add_argument(
-        "--regions",
-        type=str,
-        default=",".join(REGIONS),
-        help=f"Comma-separated list of AWS regions to scan (default: {','.join(REGIONS)})"
     )
     
     try:
         args = parser.parse_args()
     except SystemExit as e:
         if e.code == 2:  # Argument parsing error
+            # Keep commands sorted alphabetically
             print("\nAvailable commands:")
             print("  accounts         List all AWS SSO accounts and available roles")
-            print("  loadbalancers    Enumerate ALBs, NLBs, and Classic ELBs")
             print("  ecs              Enumerate running ECS containers")
+            print("  loadbalancers    Enumerate ALBs, NLBs, and Classic ELBs")
+            print("  route53          Enumerate Route53 hosted zones")
             print(f"\nFor more information, run: {parser.prog} --help")
         raise
     
@@ -978,6 +1106,8 @@ Examples:
         enumerate_loadbalancers(args)
     elif args.command == 'ecs':
         enumerate_ecs(args)
+    elif args.command == 'route53':
+        enumerate_route53(args)
 
 
 if __name__ == "__main__":
