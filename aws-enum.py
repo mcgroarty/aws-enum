@@ -249,6 +249,47 @@ def print_certificates(certs: list[str], region: str, env: dict, show_domains: b
                 print(f"          Domain: Unable to retrieve")
 
 
+# ============================================================================
+# ECS Functions
+# ============================================================================
+
+def list_ecs_clusters(region: str, env: dict) -> list[str]:
+    """List all ECS clusters in a region."""
+    data = run_aws_cli(["ecs", "list-clusters", "--region", region], env)
+    return data.get("clusterArns", []) if data else []
+
+
+def list_ecs_services(cluster_arn: str, region: str, env: dict) -> list[str]:
+    """List all services in an ECS cluster."""
+    data = run_aws_cli(["ecs", "list-services", "--cluster", cluster_arn, "--region", region], env)
+    return data.get("serviceArns", []) if data else []
+
+
+def list_ecs_tasks(cluster_arn: str, region: str, env: dict, service_arn: Optional[str] = None) -> list[str]:
+    """List running tasks in an ECS cluster, optionally filtered by service."""
+    args = ["ecs", "list-tasks", "--cluster", cluster_arn, "--desired-status", "RUNNING", "--region", region]
+    if service_arn:
+        args.extend(["--service-name", service_arn])
+    data = run_aws_cli(args, env)
+    return data.get("taskArns", []) if data else []
+
+
+def describe_ecs_tasks(cluster_arn: str, task_arns: list[str], region: str, env: dict) -> list[dict]:
+    """Get detailed information about ECS tasks."""
+    if not task_arns:
+        return []
+    data = run_aws_cli(["ecs", "describe-tasks", "--cluster", cluster_arn, "--tasks"] + task_arns + ["--region", region], env)
+    return data.get("tasks", []) if data else []
+
+
+def get_ecs_tags(resource_arn: str, region: str, env: dict) -> dict[str, str]:
+    """Get tags for an ECS resource."""
+    data = run_aws_cli(["ecs", "list-tags-for-resource", "--resource-arn", resource_arn, "--region", region], env)
+    if not data:
+        return {}
+    return {tag["key"]: tag["value"] for tag in data.get("tags", [])}
+
+
 def list_org_accounts(region: str = "us-east-1") -> Optional[list[dict]]:
     """List all accounts in the organization using AWS Organizations API."""
     data = run_aws_cli(["organizations", "list-accounts", "--region", region])
@@ -578,6 +619,143 @@ def enumerate_loadbalancers(args):
             break
 
 
+def enumerate_ecs(args):
+    """Enumerate ECS containers across all AWS SSO accounts."""
+    profile = get_sso_profile()
+    access_token = get_access_token(profile)
+    
+    print("SSO token valid. Enumerating ECS containers...\n")
+    
+    # Parse regions from command line
+    regions = [r.strip() for r in args.regions.split(',') if r.strip()]
+    
+    # Parse account filter if specified
+    account_filter = None
+    if args.accounts:
+        account_filter = set(a.strip().lower() for a in args.accounts.split(',') if a.strip())
+    
+    # Get accounts with roles using shared function
+    enumerable_accounts = get_enumerable_accounts(access_token)
+    
+    # Filter accounts if specified
+    if account_filter:
+        filtered_accounts = []
+        for account, roles, is_master in enumerable_accounts:
+            account_id = account["accountId"]
+            account_name = account.get("accountName", "Unknown")
+            if account_id.lower() in account_filter or account_name.lower() in account_filter:
+                filtered_accounts.append((account, roles, is_master))
+        
+        if not filtered_accounts:
+            print(f"No accounts matched filter: {args.accounts}")
+            print("\nAvailable accounts:")
+            for account, roles, is_master in enumerable_accounts:
+                print(f"  {account.get('accountName', 'Unknown')} ({account['accountId']})")
+            return
+        
+        enumerable_accounts = filtered_accounts
+        print(f"Filtering to {len(enumerable_accounts)} account(s): {args.accounts}\n")
+    
+    for account, roles, is_master in enumerable_accounts:
+        account_id = account["accountId"]
+        account_name = account.get("accountName", "Unknown")
+        
+        print(f"=== {account_name} ({account_id}) ===")
+        
+        # Check for SecurityAudit role
+        if ROLE_NAME not in roles:
+            print(f"  ERROR: {ROLE_NAME} role not provisioned. Skipping.")
+            print(f"  Available roles: {', '.join(roles)}")
+            print()
+            continue
+        
+        # Get credentials
+        credentials = get_role_credentials(account_id, ROLE_NAME, access_token)
+        
+        if not credentials:
+            print(f"  ERROR: Failed to get credentials for {ROLE_NAME}")
+            print()
+            continue
+        
+        env = make_aws_env(credentials)
+        
+        # Enumerate ECS per region
+        found_containers = False
+        for region in regions:
+            print(f"  Region: {region}")
+            
+            # Get all clusters
+            cluster_arns = list_ecs_clusters(region, env)
+            if not cluster_arns:
+                continue
+            
+            for cluster_arn in cluster_arns:
+                cluster_name = cluster_arn.split("/")[-1]
+                
+                # Get services in the cluster
+                service_arns = list_ecs_services(cluster_arn, region, env)
+                
+                # Track tasks we've seen to avoid duplicates
+                seen_task_arns = set()
+                
+                # Get tasks for each service
+                for service_arn in service_arns:
+                    service_name = service_arn.split("/")[-1]
+                    task_arns = list_ecs_tasks(cluster_arn, region, env, service_arn)
+                    
+                    if task_arns:
+                        tasks = describe_ecs_tasks(cluster_arn, task_arns, region, env)
+                        for task in tasks:
+                            task_arn = task.get("taskArn", "")
+                            seen_task_arns.add(task_arn)
+                            
+                            for container in task.get("containers", []):
+                                container_name = container.get("name", "Unknown")
+                                status = container.get("lastStatus", "Unknown")
+                                image = container.get("image", "Unknown")
+                                
+                                print(f"    {cluster_name:25} {service_name:30} {container_name:25} {status:10} {image}")
+                                
+                                if args.show_tags:
+                                    tags = get_ecs_tags(task_arn, region, env)
+                                    if tags:
+                                        for key, value in sorted(tags.items()):
+                                            print(f"      Tag: {key}={value}")
+                                
+                                found_containers = True
+                
+                # Get standalone tasks (not associated with a service)
+                all_task_arns = list_ecs_tasks(cluster_arn, region, env)
+                standalone_tasks = [t for t in all_task_arns if t not in seen_task_arns]
+                
+                if standalone_tasks:
+                    tasks = describe_ecs_tasks(cluster_arn, standalone_tasks, region, env)
+                    for task in tasks:
+                        task_arn = task.get("taskArn", "")
+                        
+                        for container in task.get("containers", []):
+                            container_name = container.get("name", "Unknown")
+                            status = container.get("lastStatus", "Unknown")
+                            image = container.get("image", "Unknown")
+                            
+                            print(f"    {cluster_name:25} {'(standalone)':30} {container_name:25} {status:10} {image}")
+                            
+                            if args.show_tags:
+                                tags = get_ecs_tags(task_arn, region, env)
+                                if tags:
+                                    for key, value in sorted(tags.items()):
+                                        print(f"      Tag: {key}={value}")
+                            
+                            found_containers = True
+        
+        print()
+        
+        # Exit after first account with containers if --first-only is set
+        if args.first_only and found_containers:
+            print("--first-only specified. Stopping after first account with ECS containers.")
+            break
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Enumerate various AWS resources across all AWS SSO accounts",
@@ -585,6 +763,7 @@ def main():
         epilog="""Available commands:
   accounts         List all AWS SSO accounts and available roles
   loadbalancers    Enumerate ALBs, NLBs, and Classic ELBs
+  ecs              Enumerate running ECS containers
 
 For help on a specific command, use:
   %(prog)s COMMAND --help
@@ -592,7 +771,8 @@ For help on a specific command, use:
 Examples:
   %(prog)s accounts                         # List all accounts and roles
   %(prog)s loadbalancers                    # List all load balancers
-  %(prog)s loadbalancers --help             # Show load balancer options
+  %(prog)s ecs                              # List all ECS containers
+  %(prog)s ecs --help                       # Show ECS options
   AWS_PROFILE=prod %(prog)s accounts        # Use specific SSO profile
         """
     )
@@ -635,8 +815,8 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
   %(prog)s                                         # Enumerate all accounts
-  %(prog)s --accounts "SL Production,SL Staging"   # Check specific accounts only
-  %(prog)s --accounts 303953789704                 # Check by account ID
+  %(prog)s --accounts "Production,Staging"         # Check specific accounts only
+  %(prog)s --accounts 123456789012                 # Check by account ID(s)
   %(prog)s --first-only                            # Stop after first account with load balancers
   %(prog)s --internet-facing-only                  # Show only internet-facing load balancers
   %(prog)s --show-certificates                     # Display TLS certificates attached to load balancers
@@ -677,6 +857,43 @@ Examples:
         help=f"Comma-separated list of AWS regions to scan (default: {','.join(REGIONS)})"
     )
     
+    # ECS command
+    ecs_parser = subparsers.add_parser(
+        'ecs',
+        help='Enumerate running ECS containers',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  %(prog)s                                         # Enumerate all accounts
+  %(prog)s --accounts "Production,Staging"         # Check specific accounts only
+  %(prog)s --accounts 123456789012                 # Check by account ID(s)
+  %(prog)s --first-only                            # Stop after first account with containers
+  %(prog)s --show-tags                             # Display task tags
+  AWS_PROFILE=prod %(prog)s                        # Use specific SSO profile
+        """
+    )
+    ecs_parser.add_argument(
+        "--first-only",
+        action="store_true",
+        help="Stop after finding the first account with ECS containers (useful for debugging)"
+    )
+    ecs_parser.add_argument(
+        "--show-tags",
+        action="store_true",
+        help="Display tags for ECS tasks"
+    )
+    ecs_parser.add_argument(
+        "--accounts",
+        type=str,
+        default=None,
+        help="Comma-separated list of account names or IDs to check (default: all accounts)"
+    )
+    ecs_parser.add_argument(
+        "--regions",
+        type=str,
+        default=",".join(REGIONS),
+        help=f"Comma-separated list of AWS regions to scan (default: {','.join(REGIONS)})"
+    )
+    
     try:
         args = parser.parse_args()
     except SystemExit as e:
@@ -684,6 +901,7 @@ Examples:
             print("\nAvailable commands:")
             print("  accounts         List all AWS SSO accounts and available roles")
             print("  loadbalancers    Enumerate ALBs, NLBs, and Classic ELBs")
+            print("  ecs              Enumerate running ECS containers")
             print(f"\nFor more information, run: {parser.prog} --help")
         raise
     
@@ -692,6 +910,8 @@ Examples:
         enumerate_accounts(args)
     elif args.command == 'loadbalancers':
         enumerate_loadbalancers(args)
+    elif args.command == 'ecs':
+        enumerate_ecs(args)
 
 
 if __name__ == "__main__":
