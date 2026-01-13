@@ -10,10 +10,14 @@ Currently supports load balancer enumeration (ALBs, NLBs, GWLBs, and Classic ELB
 # View available commands
 ./enumerate-elbs.py --help
 
+# List all accounts and roles
+./enumerate-elbs.py accounts
+
 # Enumerate all load balancers
 ./enumerate-elbs.py loadbalancers
 
-# Get help for the load balancers command
+# Get help for specific commands
+./enumerate-elbs.py accounts --help
 ./enumerate-elbs.py loadbalancers --help
 ```
 
@@ -21,6 +25,7 @@ Currently supports load balancer enumeration (ALBs, NLBs, GWLBs, and Classic ELB
 
 - **Automatic SSO Authentication**: Handles SSO token caching and automatically prompts for login when needed
 - **Multi-Account Support**: Enumerates load balancers across all accounts accessible through AWS SSO
+- **Optimized Performance**: Uses 4-way concurrency for account role checking to improve enumeration speed while maintaining API reliability
 - **Flexible Region Scanning**: Scan any AWS regions via `--regions` flag (default: us-west-2)
 - **All Load Balancer Types**: Lists ALBs, NLBs, GWLBs, and Classic ELBs
 - **Detailed Output**: Shows load balancer name, type, scheme (internet-facing/internal), and DNS name
@@ -98,7 +103,7 @@ markdownlint --config .markdownlint.yaml README.md
 
 ## Usage
 
-### Basic Usage
+### Getting Started
 
 **View available commands:**
 ```bash
@@ -228,7 +233,36 @@ The tool uses a command-based interface. Use `./enumerate-elbs.py --help` to see
 
 | Command | Description |
 |---------|-------------|
+| `accounts` | List all AWS SSO accounts and available roles |
 | `loadbalancers` | Enumerate ALBs, NLBs, GWLBs, and Classic ELBs |
+
+### Accounts Command
+
+**List all accounts (simple view):**
+```bash
+./enumerate-elbs.py accounts
+```
+
+**Show detailed role information:**
+```bash
+./enumerate-elbs.py accounts --show-roles
+```
+
+**Include organization-wide account list:**
+```bash
+./enumerate-elbs.py accounts --include-org
+```
+
+**Use with specific AWS profile:**
+```bash
+AWS_PROFILE=my-sso-profile ./enumerate-elbs.py accounts
+```
+
+The accounts command shows:
+- **Default**: Account names, IDs, and readiness status (✅/❌)
+- **With `--show-roles`**: Available IAM roles in each account
+- **With `--include-org`**: All organization accounts (requires Organizations permissions)
+- Clear indicators for accounts ready for enumeration
 
 ### Load Balancer Command Options
 
