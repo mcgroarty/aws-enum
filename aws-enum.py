@@ -42,6 +42,39 @@ ROLE_NAME = "SecurityAudit"
 REGIONS = ["us-west-2"]
 
 
+def format_age(started_at: str) -> str:
+    """Format task age as human-readable string."""
+    try:
+        # Parse ISO format timestamp
+        start_time = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        delta = now - start_time
+        
+        days = delta.days
+        hours = delta.seconds // 3600
+        minutes = (delta.seconds % 3600) // 60
+        
+        if days > 0:
+            return f"{days}d {hours}h"
+        elif hours > 0:
+            return f"{hours}h {minutes}m"
+        else:
+            return f"{minutes}m"
+    except (ValueError, TypeError):
+        return "unknown"
+
+
+def get_task_age_days(started_at: str) -> float:
+    """Get task age in days as a float."""
+    try:
+        start_time = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        delta = now - start_time
+        return delta.total_seconds() / 86400  # seconds per day
+    except (ValueError, TypeError):
+        return 0.0
+
+
 def get_sso_profile() -> str:
     """Get SSO profile from environment or default."""
     return os.environ.get("AWS_PROFILE", "default")
@@ -701,26 +734,45 @@ def enumerate_ecs(args):
                 # Get tasks for each service
                 for service_arn in service_arns:
                     service_name = service_arn.split("/")[-1]
+                    
+                    # Get service tags once per service (if --show-tags)
+                    service_tags = {}
+                    if args.show_tags:
+                        service_tags = get_ecs_tags(service_arn, region, env)
+                    
                     task_arns = list_ecs_tasks(cluster_arn, region, env, service_arn)
                     
                     if task_arns:
                         tasks = describe_ecs_tasks(cluster_arn, task_arns, region, env)
                         for task in tasks:
                             task_arn = task.get("taskArn", "")
+                            started_at = task.get("startedAt", "")
+                            task_age_days = get_task_age_days(started_at) if started_at else 0.0
+                            
+                            # Skip tasks younger than min-age-days
+                            if args.min_age_days and task_age_days < args.min_age_days:
+                                seen_task_arns.add(task_arn)
+                                continue
+                            
                             seen_task_arns.add(task_arn)
+                            age_str = format_age(started_at) if started_at else "unknown"
                             
                             for container in task.get("containers", []):
                                 container_name = container.get("name", "Unknown")
                                 status = container.get("lastStatus", "Unknown")
                                 image = container.get("image", "Unknown")
                                 
-                                print(f"    {cluster_name:25} {service_name:30} {container_name:25} {status:10} {image}")
+                                print(f"    {cluster_name:25} {service_name:30} {container_name:25} {status:10} {age_str:10} {image}")
                                 
                                 if args.show_tags:
-                                    tags = get_ecs_tags(task_arn, region, env)
-                                    if tags:
-                                        for key, value in sorted(tags.items()):
-                                            print(f"      Tag: {key}={value}")
+                                    # Show service tags first, then task tags
+                                    if service_tags:
+                                        for key, value in sorted(service_tags.items()):
+                                            print(f"      Service Tag: {key}={value}")
+                                    task_tags = get_ecs_tags(task_arn, region, env)
+                                    if task_tags:
+                                        for key, value in sorted(task_tags.items()):
+                                            print(f"      Task Tag: {key}={value}")
                                 
                                 found_containers = True
                 
@@ -732,19 +784,27 @@ def enumerate_ecs(args):
                     tasks = describe_ecs_tasks(cluster_arn, standalone_tasks, region, env)
                     for task in tasks:
                         task_arn = task.get("taskArn", "")
+                        started_at = task.get("startedAt", "")
+                        task_age_days = get_task_age_days(started_at) if started_at else 0.0
+                        
+                        # Skip tasks younger than min-age-days
+                        if args.min_age_days and task_age_days < args.min_age_days:
+                            continue
+                        
+                        age_str = format_age(started_at) if started_at else "unknown"
                         
                         for container in task.get("containers", []):
                             container_name = container.get("name", "Unknown")
                             status = container.get("lastStatus", "Unknown")
                             image = container.get("image", "Unknown")
                             
-                            print(f"    {cluster_name:25} {'(standalone)':30} {container_name:25} {status:10} {image}")
+                            print(f"    {cluster_name:25} {'(standalone)':30} {container_name:25} {status:10} {age_str:10} {image}")
                             
                             if args.show_tags:
-                                tags = get_ecs_tags(task_arn, region, env)
-                                if tags:
-                                    for key, value in sorted(tags.items()):
-                                        print(f"      Tag: {key}={value}")
+                                task_tags = get_ecs_tags(task_arn, region, env)
+                                if task_tags:
+                                    for key, value in sorted(task_tags.items()):
+                                        print(f"      Task Tag: {key}={value}")
                             
                             found_containers = True
         
@@ -867,8 +927,8 @@ Examples:
   %(prog)s --accounts "Production,Staging"         # Check specific accounts only
   %(prog)s --accounts 123456789012                 # Check by account ID(s)
   %(prog)s --first-only                            # Stop after first account with containers
-  %(prog)s --show-tags                             # Display task tags
-  AWS_PROFILE=prod %(prog)s                        # Use specific SSO profile
+  %(prog)s --show-tags                             # Display task tags  %(prog)s --min-age-days 7                        # Only show tasks older than 7 days
+  %(prog)s --min-age-days 0.5                      # Only show tasks older than 12 hours  AWS_PROFILE=prod %(prog)s                        # Use specific SSO profile
         """
     )
     ecs_parser.add_argument(
@@ -880,6 +940,12 @@ Examples:
         "--show-tags",
         action="store_true",
         help="Display tags for ECS tasks"
+    )
+    ecs_parser.add_argument(
+        "--min-age-days",
+        type=float,
+        default=None,
+        help="Only show tasks older than this many days (e.g., 7 or 0.5 for 12 hours)"
     )
     ecs_parser.add_argument(
         "--accounts",
