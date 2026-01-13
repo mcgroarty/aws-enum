@@ -35,7 +35,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 ROLE_NAME = "SecurityAudit"
 REGIONS = ["us-west-2"]
@@ -102,19 +102,22 @@ def get_access_token(profile: str) -> str:
     return token
 
 
-def aws_sso_command(args: list[str], access_token: str) -> Optional[Union[dict, list]]:
-    """Run an AWS SSO command with the access token."""
+def run_aws_cli(args: list[str], env: Optional[dict] = None) -> Optional[dict]:
+    """Run an AWS CLI command and return parsed JSON output."""
     result = subprocess.run(
         ["aws"] + args + ["--output", "json"],
         capture_output=True,
         text=True,
-        env={**dict(__import__("os").environ), "AWS_ACCESS_TOKEN": access_token}
+        env=env
     )
     
     if result.returncode != 0:
         return None
     
-    return json.loads(result.stdout)
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
 
 
 def list_accounts(access_token: str) -> list[dict]:
@@ -182,51 +185,23 @@ def make_aws_env(credentials: dict) -> dict:
 
 def list_elbv2(region: str, env: dict) -> list[dict]:
     """List ALB/NLB/GWLB in a region."""
-    result = subprocess.run(
-        ["aws", "elbv2", "describe-load-balancers", "--region", region, "--output", "json"],
-        capture_output=True,
-        text=True,
-        env=env
-    )
-    
-    if result.returncode != 0:
-        return []
-    
-    return json.loads(result.stdout).get("LoadBalancers", [])
+    data = run_aws_cli(["elbv2", "describe-load-balancers", "--region", region], env)
+    return data.get("LoadBalancers", []) if data else []
 
 
 def list_elb_classic(region: str, env: dict) -> list[dict]:
     """List Classic ELBs in a region."""
-    result = subprocess.run(
-        ["aws", "elb", "describe-load-balancers", "--region", region, "--output", "json"],
-        capture_output=True,
-        text=True,
-        env=env
-    )
-    
-    if result.returncode != 0:
-        return []
-    
-    return json.loads(result.stdout).get("LoadBalancerDescriptions", [])
+    data = run_aws_cli(["elb", "describe-load-balancers", "--region", region], env)
+    return data.get("LoadBalancerDescriptions", []) if data else []
 
 
 def get_elbv2_certificates(lb_arn: str, region: str, env: dict) -> list[str]:
     """Get TLS certificates for an ALB/NLB."""
-    result = subprocess.run(
-        ["aws", "elbv2", "describe-listeners",
-         "--load-balancer-arn", lb_arn,
-         "--region", region,
-         "--output", "json"],
-        capture_output=True,
-        text=True,
-        env=env
-    )
-    
-    if result.returncode != 0:
+    data = run_aws_cli(["elbv2", "describe-listeners", "--load-balancer-arn", lb_arn, "--region", region], env)
+    if not data:
         return []
     
     certificates = []
-    data = json.loads(result.stdout)
     for listener in data.get("Listeners", []):
         if listener.get("Protocol") in ["HTTPS", "TLS"]:
             for cert in listener.get("Certificates", []):
@@ -239,21 +214,11 @@ def get_elbv2_certificates(lb_arn: str, region: str, env: dict) -> list[str]:
 
 def get_classic_elb_certificates(lb_name: str, region: str, env: dict) -> list[str]:
     """Get TLS certificates for a Classic ELB."""
-    result = subprocess.run(
-        ["aws", "elb", "describe-load-balancers",
-         "--load-balancer-names", lb_name,
-         "--region", region,
-         "--output", "json"],
-        capture_output=True,
-        text=True,
-        env=env
-    )
-    
-    if result.returncode != 0:
+    data = run_aws_cli(["elb", "describe-load-balancers", "--load-balancer-names", lb_name, "--region", region], env)
+    if not data:
         return []
     
     certificates = []
-    data = json.loads(result.stdout)
     for lb in data.get("LoadBalancerDescriptions", []):
         for listener in lb.get("ListenerDescriptions", []):
             listener_data = listener.get("Listener", {})
@@ -267,20 +232,10 @@ def get_classic_elb_certificates(lb_name: str, region: str, env: dict) -> list[s
 
 def get_certificate_domains(cert_arn: str, region: str, env: dict) -> list[str]:
     """Get domain names for a certificate from ACM."""
-    result = subprocess.run(
-        ["aws", "acm", "describe-certificate",
-         "--certificate-arn", cert_arn,
-         "--region", region,
-         "--output", "json"],
-        capture_output=True,
-        text=True,
-        env=env
-    )
-    
-    if result.returncode != 0:
+    data = run_aws_cli(["acm", "describe-certificate", "--certificate-arn", cert_arn, "--region", region], env)
+    if not data:
         return []
     
-    data = json.loads(result.stdout)
     cert_data = data.get("Certificate", {})
     domains = []
     
@@ -298,24 +253,27 @@ def get_certificate_domains(cert_arn: str, region: str, env: dict) -> list[str]:
     return domains
 
 
+def print_certificates(certs: list[str], region: str, env: dict, show_domains: bool) -> None:
+    """Print certificate information for a load balancer."""
+    if not certs:
+        print(f"        Certificate: None")
+        return
+    
+    for cert in certs:
+        print(f"        Certificate: {cert}")
+        if show_domains:
+            domains = get_certificate_domains(cert, region, env)
+            if domains:
+                for domain in domains:
+                    print(f"          Domain: {domain}")
+            else:
+                print(f"          Domain: Unable to retrieve")
+
+
 def list_org_accounts(region: str = "us-east-1") -> Optional[list[dict]]:
     """List all accounts in the organization using AWS Organizations API."""
-    result = subprocess.run(
-        ["aws", "organizations", "list-accounts", "--region", region, "--output", "json"],
-        capture_output=True,
-        text=True
-    )
-    
-    if result.returncode != 0:
-        return None
-    
-    try:
-        data = json.loads(result.stdout)
-        return data.get("Accounts", [])
-    except json.JSONDecodeError:
-        return None
-
-
+    data = run_aws_cli(["organizations", "list-accounts", "--region", region])
+    return data.get("Accounts", []) if data else None
 def get_master_account_id() -> Optional[str]:
     """Get the master account ID from AWS Organizations."""
     try:
@@ -618,21 +576,9 @@ def enumerate_loadbalancers(args):
                     for lb in elbv2_list:
                         print(f"      {lb['LoadBalancerName']:40} {lb['Type']:12} {lb['Scheme']:15} {lb['DNSName']}")
                         
-                        # Show certificates if requested
                         if args.show_certificates or args.show_certificate_domains:
                             certs = get_elbv2_certificates(lb['LoadBalancerArn'], region, env)
-                            if certs:
-                                for cert in certs:
-                                    print(f"        Certificate: {cert}")
-                                    if args.show_certificate_domains:
-                                        domains = get_certificate_domains(cert, region, env)
-                                        if domains:
-                                            for domain in domains:
-                                                print(f"          Domain: {domain}")
-                                        else:
-                                            print(f"          Domain: Unable to retrieve")
-                            else:
-                                print(f"        Certificate: None")
+                            print_certificates(certs, region, env, args.show_certificate_domains)
                         
                     found_load_balancers = True
             
@@ -648,21 +594,9 @@ def enumerate_loadbalancers(args):
                     for lb in elb_list:
                         print(f"      {lb['LoadBalancerName']:40} {'classic':12} {lb['Scheme']:15} {lb['DNSName']}")
                         
-                        # Show certificates if requested
                         if args.show_certificates or args.show_certificate_domains:
                             certs = get_classic_elb_certificates(lb['LoadBalancerName'], region, env)
-                            if certs:
-                                for cert in certs:
-                                    print(f"        Certificate: {cert}")
-                                    if args.show_certificate_domains:
-                                        domains = get_certificate_domains(cert, region, env)
-                                        if domains:
-                                            for domain in domains:
-                                                print(f"          Domain: {domain}")
-                                        else:
-                                            print(f"          Domain: Unable to retrieve")
-                            else:
-                                print(f"        Certificate: None")
+                            print_certificates(certs, region, env, args.show_certificate_domains)
                         
                     found_load_balancers = True
         
