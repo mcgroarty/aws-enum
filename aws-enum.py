@@ -1021,6 +1021,7 @@ def enumerate_route53(args):
                                 continue
                         
                         # Get target value(s)
+                        values = []
                         if is_alias:
                             # ALIAS record
                             target = record["AliasTarget"].get("DNSName", "").rstrip(".")
