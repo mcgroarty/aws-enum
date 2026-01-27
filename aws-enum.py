@@ -34,6 +34,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -180,6 +181,7 @@ def run_aws_cli(args: list[str], env: Optional[dict] = None) -> Optional[dict]:
 
 # Global SSO region (set when token is loaded)
 _sso_region = "us-east-1"
+_thread_local = threading.local()  # Thread-local storage for clients
 
 
 def set_sso_region(region: str):
@@ -188,14 +190,18 @@ def set_sso_region(region: str):
     _sso_region = region
 
 
-def get_sso_client(access_token: str):
-    """Create a boto3 SSO client."""
-    return boto3.client("sso", region_name=_sso_region, config=BOTO_CONFIG)
+def get_sso_client():
+    """Get or create a thread-local boto3 SSO client."""
+    if not hasattr(_thread_local, "sso_client"):
+        _thread_local.sso_client = boto3.client(
+            "sso", region_name=_sso_region, config=BOTO_CONFIG
+        )
+    return _thread_local.sso_client
 
 
 def list_accounts(access_token: str) -> list[dict]:
     """List all accounts accessible via SSO."""
-    client = get_sso_client(access_token)
+    client = get_sso_client()
     accounts = []
     paginator = client.get_paginator("list_accounts")
 
@@ -208,7 +214,7 @@ def list_accounts(access_token: str) -> list[dict]:
 def list_account_roles(account_id: str, access_token: str) -> Optional[list[str]]:
     """List available roles for an account. Returns None on API failure."""
     try:
-        client = get_sso_client(access_token)
+        client = get_sso_client()
         roles = []
         paginator = client.get_paginator("list_account_roles")
 
@@ -225,7 +231,7 @@ def get_role_credentials(
 ) -> Optional[dict]:
     """Get temporary credentials for a role."""
     try:
-        client = get_sso_client(access_token)
+        client = get_sso_client()
         response = client.get_role_credentials(
             roleName=role_name, accountId=account_id, accessToken=access_token
         )
