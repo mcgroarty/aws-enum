@@ -1,5 +1,5 @@
-# This script uses only Python standard library modules
-# No third-party Python packages required
+# Runtime dependencies
+boto3>=1.28.0
 
 # System dependency (not installable via pip):
 # - AWS CLI v2 must be installed and configured with SSO

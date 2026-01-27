@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
 AWS Resource Enumeration Tool
 
@@ -34,13 +34,20 @@ import os
 import re
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import boto3
+from botocore.config import Config
+
 ROLE_NAME = "SecurityAudit"
 REGIONS = ["us-west-2"]
+
+# boto3 client config with retries
+BOTO_CONFIG = Config(retries={"max_attempts": 3, "mode": "adaptive"})
 
 
 def format_age(started_at: str) -> str:
@@ -81,18 +88,27 @@ def get_sso_profile() -> str:
     return os.environ.get("AWS_PROFILE", "default")
 
 
-def get_cached_access_token() -> Optional[str]:
-    """Read valid access token from SSO cache."""
+def get_cached_access_token() -> Optional[tuple[str, str]]:
+    """Read valid access token from SSO cache.
+
+    Returns:
+        Tuple of (access_token, region) if found, None otherwise.
+    """
     sso_cache_dir = Path.home() / ".aws" / "sso" / "cache"
 
     if not sso_cache_dir.exists():
         return None
+
+    # Find the most recently modified valid token
+    best_token = None
+    best_mtime = 0
 
     for cache_file in sso_cache_dir.glob("*.json"):
         try:
             data = json.loads(cache_file.read_text())
             access_token = data.get("accessToken")
             expires_at = data.get("expiresAt")
+            region = data.get("region", "us-east-1")
 
             if not access_token or not expires_at:
                 continue
@@ -100,11 +116,14 @@ def get_cached_access_token() -> Optional[str]:
             # Parse expiration and check validity
             exp_time = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
             if exp_time > datetime.now(timezone.utc):
-                return access_token
+                mtime = cache_file.stat().st_mtime
+                if mtime > best_mtime:
+                    best_mtime = mtime
+                    best_token = (access_token, region)
         except (json.JSONDecodeError, ValueError, KeyError):
             continue
 
-    return None
+    return best_token
 
 
 def sso_login(profile: str) -> bool:
@@ -116,23 +135,27 @@ def sso_login(profile: str) -> bool:
     return result.returncode == 0
 
 
-def get_access_token(profile: str) -> str:
-    """Get valid access token, triggering login if needed."""
-    token = get_cached_access_token()
+def get_access_token(profile: str) -> tuple[str, str]:
+    """Get valid access token, triggering login if needed.
 
-    if token:
-        return token
+    Returns:
+        Tuple of (access_token, sso_region)
+    """
+    result = get_cached_access_token()
+
+    if result:
+        return result
 
     if not sso_login(profile):
         print("ERROR: SSO login failed.", file=sys.stderr)
         sys.exit(1)
 
-    token = get_cached_access_token()
-    if not token:
+    result = get_cached_access_token()
+    if not result:
         print("ERROR: Still no valid token after login.", file=sys.stderr)
         sys.exit(1)
 
-    return token
+    return result
 
 
 def run_aws_cli(args: list[str], env: Optional[dict] = None) -> Optional[dict]:
@@ -150,39 +173,122 @@ def run_aws_cli(args: list[str], env: Optional[dict] = None) -> Optional[dict]:
         return None
 
 
-def run_sso_command(args: list[str], access_token: str) -> Optional[dict]:
-    """Run an AWS SSO command with access token and return parsed JSON output."""
-    return run_aws_cli(["sso"] + args + ["--access-token", access_token])
+# ============================================================================
+# boto3-based SSO Functions
+# ============================================================================
+
+
+# Global SSO region (set when token is loaded)
+_sso_region = "us-east-1"
+
+
+def set_sso_region(region: str):
+    """Set the SSO region for boto3 clients."""
+    global _sso_region
+    _sso_region = region
+
+
+def get_sso_client(access_token: str):
+    """Create a boto3 SSO client."""
+    return boto3.client("sso", region_name=_sso_region, config=BOTO_CONFIG)
 
 
 def list_accounts(access_token: str) -> list[dict]:
     """List all accounts accessible via SSO."""
-    data = run_sso_command(["list-accounts"], access_token)
-    if data is None:
-        print("ERROR: Failed to list accounts", file=sys.stderr)
-        sys.exit(1)
-    return data.get("accountList", [])
+    client = get_sso_client(access_token)
+    accounts = []
+    paginator = client.get_paginator("list_accounts")
+
+    for page in paginator.paginate(accessToken=access_token):
+        accounts.extend(page.get("accountList", []))
+
+    return accounts
 
 
 def list_account_roles(account_id: str, access_token: str) -> Optional[list[str]]:
     """List available roles for an account. Returns None on API failure."""
-    data = run_sso_command(
-        ["list-account-roles", "--account-id", account_id], access_token
-    )
-    if data is None:
-        return None  # API failure - distinct from empty role list
-    return [role["roleName"] for role in data.get("roleList", [])]
+    try:
+        client = get_sso_client(access_token)
+        roles = []
+        paginator = client.get_paginator("list_account_roles")
+
+        for page in paginator.paginate(accessToken=access_token, accountId=account_id):
+            roles.extend([r["roleName"] for r in page.get("roleList", [])])
+
+        return roles
+    except Exception:
+        return None
 
 
 def get_role_credentials(
     account_id: str, role_name: str, access_token: str
 ) -> Optional[dict]:
     """Get temporary credentials for a role."""
-    data = run_sso_command(
-        ["get-role-credentials", "--account-id", account_id, "--role-name", role_name],
-        access_token,
+    try:
+        client = get_sso_client(access_token)
+        response = client.get_role_credentials(
+            roleName=role_name, accountId=account_id, accessToken=access_token
+        )
+        return response.get("roleCredentials")
+    except Exception:
+        return None
+
+
+def get_master_account_id() -> Optional[str]:
+    """Get the master account ID from AWS Organizations."""
+    try:
+        client = boto3.client("organizations", region_name="us-east-1")
+        response = client.describe_organization()
+        return response.get("Organization", {}).get("MasterAccountId")
+    except Exception:
+        return None
+
+
+def get_account_roles_concurrent(accounts: list[dict], access_token: str):
+    """Get roles for multiple accounts with concurrency."""
+
+    def get_single_account_roles(account):
+        """Fetch roles for a single account."""
+        account_id = account["accountId"]
+        roles = list_account_roles(account_id, access_token)
+        return account_id, roles if roles is not None else []
+
+    account_roles = {}
+    print(
+        f"  Checking roles for {len(accounts)} accounts...",
+        end="",
+        flush=True,
     )
-    return data.get("roleCredentials") if data else None
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_account = {
+            executor.submit(get_single_account_roles, account): account
+            for account in accounts
+        }
+
+        completed = 0
+        for future in as_completed(future_to_account):
+            account = future_to_account[future]
+            try:
+                account_id, roles = future.result()
+                account_roles[account_id] = roles
+                completed += 1
+
+                if completed % 4 == 0 or completed == len(accounts):
+                    print(".", end="", flush=True)
+
+            except Exception as e:
+                print(f"\n    ⚠️  Error for {account.get('accountName')}: {e}")
+                account_roles[account["accountId"]] = []
+                completed += 1
+
+    print(" done!")
+    return account_roles
+
+
+# ============================================================================
+# Credential helpers
+# ============================================================================
 
 
 def make_aws_env(credentials: dict) -> dict:
@@ -459,89 +565,6 @@ def list_resource_record_sets(zone_id: str, env: dict) -> list[dict]:
     return all_records
 
 
-def get_master_account_id() -> Optional[str]:
-    """Get the master account ID from AWS Organizations."""
-    data = run_aws_cli(
-        ["organizations", "describe-organization", "--region", "us-east-1"]
-    )
-    if data:
-        return data.get("Organization", {}).get("MasterAccountId")
-    return None
-
-
-def get_account_roles_with_limited_concurrency(accounts, access_token):
-    """Get roles for multiple accounts with limited concurrency to avoid rate limits."""
-    import time
-
-    def get_single_account_roles_with_retry(account, max_retries=3):
-        """Fetch roles for a single account with retry logic."""
-        account_id = account["accountId"]
-        for attempt in range(max_retries):
-            roles = list_account_roles(account_id, access_token)
-            if roles is not None:  # Success (even if empty list)
-                return account_id, roles
-            # Exponential backoff on failure
-            if attempt < max_retries - 1:
-                time.sleep(0.5 * (2**attempt))
-        # All retries failed
-        return account_id, None
-
-    account_roles = {}
-    failed_accounts = []
-    print(
-        f"  Checking roles for {len(accounts)} accounts (10-way concurrency)...",
-        end="",
-        flush=True,
-    )
-
-    # Use limited concurrency to avoid overwhelming AWS SSO API
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        # Submit all role-checking tasks
-        future_to_account = {
-            executor.submit(get_single_account_roles_with_retry, account): account
-            for account in accounts
-        }
-
-        completed = 0
-        for future in as_completed(future_to_account):
-            account = future_to_account[future]
-            try:
-                account_id, roles = future.result()
-                if roles is None:
-                    # API failure even after retries
-                    failed_accounts.append(account.get("accountName", account_id))
-                    account_roles[account_id] = []  # Treat as no roles for now
-                else:
-                    account_roles[account_id] = roles
-                completed += 1
-
-                # Show progress more frequently with parallel processing
-                if completed % 4 == 0 or completed == len(accounts):
-                    print(".", end="", flush=True)
-
-            except Exception as e:
-                print(
-                    f"\n    ⚠️  Error for {account.get('accountName', account['accountId'])}: {e}"
-                )
-                account_roles[account["accountId"]] = []
-                completed += 1
-
-    print(" done!")
-
-    # Warn about failed accounts
-    if failed_accounts:
-        print(
-            f"  ⚠️  Warning: Failed to fetch roles for {len(failed_accounts)} account(s): {', '.join(failed_accounts[:5])}",
-            end="",
-        )
-        if len(failed_accounts) > 5:
-            print(f" (and {len(failed_accounts) - 5} more)")
-        else:
-            print()
-
-    return account_roles
-
-
 def get_enumerable_accounts(
     access_token: str, show_progress: bool = True
 ) -> list[tuple[dict, list[str], bool]]:
@@ -558,23 +581,35 @@ def get_enumerable_accounts(
         List of tuples: (account_dict, roles_list, is_master)
         Sorted with master account first, then ready accounts, then non-ready, all alphabetically.
     """
+    start_time = time.time()
+
     accounts = list_accounts(access_token)
 
     if not accounts:
         return []
 
-    # Get master account ID and roles concurrently (limited concurrency for roles)
+    if show_progress:
+        elapsed = time.time() - start_time
+        print(f"  Listed {len(accounts)} accounts in {elapsed:.2f}s")
+
+    # Get master account ID and roles concurrently
     if show_progress:
         print("  Identifying master account and checking roles...")
+
+    roles_start = time.time()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         master_future = executor.submit(get_master_account_id)
         roles_future = executor.submit(
-            get_account_roles_with_limited_concurrency, accounts, access_token
+            get_account_roles_concurrent, accounts, access_token
         )
 
         master_account_id = master_future.result()
         account_roles = roles_future.result()
+
+    if show_progress:
+        elapsed = time.time() - roles_start
+        print(f"  Role checking completed in {elapsed:.2f}s")
 
     # Organize results
     account_status = []
@@ -614,7 +649,8 @@ def get_enumerable_accounts(
 def enumerate_accounts(args):
     """List all AWS SSO accounts and their available roles."""
     profile = get_sso_profile()
-    access_token = get_access_token(profile)
+    access_token, sso_region = get_access_token(profile)
+    set_sso_region(sso_region)
 
     if args.include_org:
         print(
@@ -730,7 +766,8 @@ def enumerate_accounts(args):
 def enumerate_loadbalancers(args):
     """Enumerate load balancers across all AWS SSO accounts."""
     profile = get_sso_profile()
-    access_token = get_access_token(profile)
+    access_token, sso_region = get_access_token(profile)
+    set_sso_region(sso_region)
 
     print("SSO token valid. Enumerating accounts...\n")
 
@@ -865,7 +902,8 @@ def enumerate_loadbalancers(args):
 def enumerate_ecs(args):
     """Enumerate ECS containers across all AWS SSO accounts."""
     profile = get_sso_profile()
-    access_token = get_access_token(profile)
+    access_token, sso_region = get_access_token(profile)
+    set_sso_region(sso_region)
 
     print("SSO token valid. Enumerating ECS containers...\n")
 
@@ -1050,7 +1088,8 @@ def enumerate_ecs(args):
 def enumerate_route53(args):
     """Enumerate Route53 hosted zones across all AWS SSO accounts."""
     profile = get_sso_profile()
-    access_token = get_access_token(profile)
+    access_token, sso_region = get_access_token(profile)
+    set_sso_region(sso_region)
 
     print("SSO token valid. Enumerating Route53 hosted zones...\n")
 
