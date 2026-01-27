@@ -25,7 +25,7 @@ Add `--show-records` flag to `route53` command:
 - Pattern-match CNAME targets against known AWS patterns:
   ```
   *.elb.amazonaws.com         → Load Balancers
-  *.elb.*.amazonaws.com       → Regional ELBs  
+  *.elb.*.amazonaws.com       → Regional ELBs
   *.cloudfront.net            → CloudFront
   *.s3.amazonaws.com          → S3
   *.rds.amazonaws.com         → RDS
@@ -153,7 +153,7 @@ Determine if tasks are behind load balancers:
     Task abc123 (web:42) RUNNING 2h
       Private: 10.0.1.50
       Exposed via: my-public-alb (internet-facing)  🌐 PUBLIC
-    
+
     Task def456 (worker:10) RUNNING 5h
       Private: 10.0.2.100
       Exposed via: internal-api-nlb (internal)      🔒 INTERNAL

@@ -73,7 +73,7 @@ Currently supports:
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/secondlife/aws-enum.git
+   git clone https://github.com/mcgroarty/aws-enum.git
    cd aws-enum
    ```
 

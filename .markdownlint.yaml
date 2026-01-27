@@ -4,7 +4,7 @@
 # Disable specific rules
 MD013: false  # Line length - allow longer lines
 MD031: false  # Blanks around fences - allow tighter formatting
-MD032: false  # Blanks around lists - allow tighter formatting  
+MD032: false  # Blanks around lists - allow tighter formatting
 MD033: false  # Allow inline HTML
 MD036: false  # Emphasis used instead of header - common in troubleshooting
 MD040: false  # Fenced code language - allow code blocks without language

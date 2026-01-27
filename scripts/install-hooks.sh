@@ -18,14 +18,14 @@ if command -v pre-commit >/dev/null 2>&1; then
     echo ""
     echo "  To run all hooks manually: pre-commit run --all-files"
     echo "  To update hooks: pre-commit autoupdate"
-    
+
 else
     # Method 2: Use simple shell script fallback
     echo "  ⚠️  pre-commit framework not found"
     echo "     Install with: pip install pre-commit"
     echo ""
     echo "  📄 Installing simple pre-commit hook as fallback..."
-    
+
     cp "$REPO_ROOT/scripts/pre-commit-hook.sh" "$HOOKS_DIR/pre-commit"
     chmod +x "$HOOKS_DIR/pre-commit"
     echo "  ✅ Simple pre-commit hook installed!"
