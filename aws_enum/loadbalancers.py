@@ -1,39 +1,40 @@
 """Load balancer enumeration (ALB, NLB, GWLB, Classic ELB)."""
 
 from .accounts import ROLE_NAME, get_enumerable_accounts, get_role_credentials
-from .cli import make_aws_env, run_aws_cli
+from .client import get_client_with_credentials
 
 
-def list_elbv2(region: str, env: dict) -> list[dict]:
+def list_elbv2(elbv2_client) -> list[dict]:
     """List ALB/NLB/GWLB in a region."""
-    data = run_aws_cli(["elbv2", "describe-load-balancers", "--region", region], env)
-    return data.get("LoadBalancers", []) if data else []
+    load_balancers = []
+    paginator = elbv2_client.get_paginator("describe_load_balancers")
+
+    for page in paginator.paginate():
+        load_balancers.extend(page.get("LoadBalancers", []))
+
+    return load_balancers
 
 
-def list_elb_classic(region: str, env: dict) -> list[dict]:
+def list_elb_classic(elb_client) -> list[dict]:
     """List Classic ELBs in a region."""
-    data = run_aws_cli(["elb", "describe-load-balancers", "--region", region], env)
-    return data.get("LoadBalancerDescriptions", []) if data else []
+    load_balancers = []
+    paginator = elb_client.get_paginator("describe_load_balancers")
+
+    for page in paginator.paginate():
+        load_balancers.extend(page.get("LoadBalancerDescriptions", []))
+
+    return load_balancers
 
 
-def get_elbv2_certificates(lb_arn: str, region: str, env: dict) -> list[str]:
+def get_elbv2_certificates(lb_arn: str, elbv2_client) -> list[str]:
     """Get TLS certificates for an ALB/NLB."""
-    data = run_aws_cli(
-        [
-            "elbv2",
-            "describe-listeners",
-            "--load-balancer-arn",
-            lb_arn,
-            "--region",
-            region,
-        ],
-        env,
-    )
-    if not data:
+    try:
+        response = elbv2_client.describe_listeners(LoadBalancerArn=lb_arn)
+    except Exception:
         return []
 
     certificates = []
-    for listener in data.get("Listeners", []):
+    for listener in response.get("Listeners", []):
         if listener.get("Protocol") in ["HTTPS", "TLS"]:
             for cert in listener.get("Certificates", []):
                 cert_arn = cert.get("CertificateArn")
@@ -43,24 +44,15 @@ def get_elbv2_certificates(lb_arn: str, region: str, env: dict) -> list[str]:
     return certificates
 
 
-def get_classic_elb_certificates(lb_name: str, region: str, env: dict) -> list[str]:
+def get_classic_elb_certificates(lb_name: str, elb_client) -> list[str]:
     """Get TLS certificates for a Classic ELB."""
-    data = run_aws_cli(
-        [
-            "elb",
-            "describe-load-balancers",
-            "--load-balancer-names",
-            lb_name,
-            "--region",
-            region,
-        ],
-        env,
-    )
-    if not data:
+    try:
+        response = elb_client.describe_load_balancers(LoadBalancerNames=[lb_name])
+    except Exception:
         return []
 
     certificates = []
-    for lb in data.get("LoadBalancerDescriptions", []):
+    for lb in response.get("LoadBalancerDescriptions", []):
         for listener in lb.get("ListenerDescriptions", []):
             listener_data = listener.get("Listener", {})
             if listener_data.get("Protocol") in ["HTTPS", "SSL"]:
@@ -71,23 +63,14 @@ def get_classic_elb_certificates(lb_name: str, region: str, env: dict) -> list[s
     return certificates
 
 
-def get_certificate_domains(cert_arn: str, region: str, env: dict) -> list[str]:
+def get_certificate_domains(cert_arn: str, acm_client) -> list[str]:
     """Get domain names for a certificate from ACM."""
-    data = run_aws_cli(
-        [
-            "acm",
-            "describe-certificate",
-            "--certificate-arn",
-            cert_arn,
-            "--region",
-            region,
-        ],
-        env,
-    )
-    if not data:
+    try:
+        response = acm_client.describe_certificate(CertificateArn=cert_arn)
+    except Exception:
         return []
 
-    cert_data = data.get("Certificate", {})
+    cert_data = response.get("Certificate", {})
     domains = []
 
     # Get the primary domain
@@ -104,9 +87,7 @@ def get_certificate_domains(cert_arn: str, region: str, env: dict) -> list[str]:
     return domains
 
 
-def print_certificates(
-    certs: list[str], region: str, env: dict, show_domains: bool
-) -> None:
+def print_certificates(certs: list[str], acm_client, show_domains: bool) -> None:
     """Print certificate information for a load balancer."""
     if not certs:
         print("        Certificate: None")
@@ -115,7 +96,7 @@ def print_certificates(
     for cert in certs:
         print(f"        Certificate: {cert}")
         if show_domains:
-            domains = get_certificate_domains(cert, region, env)
+            domains = get_certificate_domains(cert, acm_client)
             if domains:
                 for domain in domains:
                     print(f"          Domain: {domain}")
@@ -193,15 +174,22 @@ def enumerate_loadbalancers(args):
             print()
             continue
 
-        env = make_aws_env(credentials)
-
         # Enumerate load balancers per region
         found_load_balancers = False
         for region in regions:
             print(f"  Region: {region}")
 
+            # Create regional clients
+            elbv2_client = get_client_with_credentials("elbv2", credentials, region)
+            elb_client = get_client_with_credentials("elb", credentials, region)
+            acm_client = (
+                get_client_with_credentials("acm", credentials, region)
+                if args.show_certificates or args.show_certificate_domains
+                else None
+            )
+
             # ALB/NLB/GWLB
-            elbv2_list = list_elbv2(region, env)
+            elbv2_list = list_elbv2(elbv2_client)
             if elbv2_list:
                 # Filter by scheme if requested
                 if args.internet_facing_only:
@@ -219,16 +207,16 @@ def enumerate_loadbalancers(args):
 
                         if args.show_certificates or args.show_certificate_domains:
                             certs = get_elbv2_certificates(
-                                lb["LoadBalancerArn"], region, env
+                                lb["LoadBalancerArn"], elbv2_client
                             )
                             print_certificates(
-                                certs, region, env, args.show_certificate_domains
+                                certs, acm_client, args.show_certificate_domains
                             )
 
                     found_load_balancers = True
 
             # Classic ELB
-            elb_list = list_elb_classic(region, env)
+            elb_list = list_elb_classic(elb_client)
             if elb_list:
                 # Filter by scheme if requested
                 if args.internet_facing_only:
@@ -246,10 +234,10 @@ def enumerate_loadbalancers(args):
 
                         if args.show_certificates or args.show_certificate_domains:
                             certs = get_classic_elb_certificates(
-                                lb["LoadBalancerName"], region, env
+                                lb["LoadBalancerName"], elb_client
                             )
                             print_certificates(
-                                certs, region, env, args.show_certificate_domains
+                                certs, acm_client, args.show_certificate_domains
                             )
 
                     found_load_balancers = True

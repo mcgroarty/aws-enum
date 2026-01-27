@@ -4,63 +4,68 @@ This document describes the internal design and implementation details of aws-en
 
 ## How It Works
 
-1. **Authentication**: Checks for a valid SSO token in the AWS CLI cache. If none exists, triggers SSO login.
-2. **Account Discovery**: Lists all accounts accessible via AWS SSO.
+1. **Authentication**: Checks for a valid SSO token in the AWS CLI cache. If none exists, triggers SSO login via `aws sso login`.
+2. **Account Discovery**: Lists all accounts accessible via AWS SSO using boto3.
 3. **Role Assumption**: For each account, assumes the `SecurityAudit` role to get temporary credentials.
-4. **Enumeration**: Uses the temporary credentials to query resources in each specified region.
+4. **Enumeration**: Uses boto3 clients with the temporary credentials to query resources in each specified region.
 5. **Certificate Retrieval** (optional): For load balancers, queries AWS Certificate Manager (ACM) to get certificate details and domain names.
 6. **Filtering** (optional): Applies filters such as internet-facing only.
 7. **Output**: Displays all resources with their key details.
 
 ## Performance Optimizations
 
-- **Concurrent Role Checking**: Uses 10-way concurrency for account role checking to improve enumeration speed while maintaining API reliability
-- **Retry Logic**: Exponential backoff on API failures when fetching account roles
+- **Concurrent Role Checking**: Uses 10-way concurrency with ThreadPoolExecutor for account role checking
+- **Thread-Local Clients**: boto3 SSO clients are cached per-thread to avoid contention
+- **Retry Logic**: boto3 adaptive retry mode with 3 max attempts
 - **Token Caching**: Reuses valid SSO tokens from AWS CLI cache
+
+## Module Structure
+
+```
+aws_enum/
+├── __init__.py          # Package exports main()
+├── __main__.py          # Entry point for python -m aws_enum
+├── auth.py              # SSO token handling, login flow
+├── client.py            # boto3 client management, thread-local caching
+├── accounts.py          # Account/role enumeration
+├── loadbalancers.py     # ELB/ALBv2 enumeration
+├── ecs.py               # ECS container enumeration
+├── route53.py           # Route53 DNS enumeration
+└── cli.py               # Argparse setup, main()
+```
 
 ## Configuration Variables
 
-The script has two main configuration variables at the top:
+Located in `aws_enum/cli.py` and `aws_enum/accounts.py`:
 
 ```python
 ROLE_NAME = "SecurityAudit"  # IAM role to assume in each account
 REGIONS = ["us-west-2"]      # Default regions to scan
 ```
 
-Both can be overridden via command-line options (`--regions`) or by editing the script.
+Both can be overridden via command-line options (`--regions`) or by editing the module.
 
-## AWS API Calls
+## AWS API Calls (via boto3)
 
 ### SSO Operations
 
-- `aws sso list-accounts` - Discover accessible accounts
-- `aws sso list-account-roles` - Check available roles per account
-- `aws sso get-role-credentials` - Get temporary credentials
+- `sso.list_accounts()` - Discover accessible accounts
+- `sso.list_account_roles()` - Check available roles per account
+- `sso.get_role_credentials()` - Get temporary credentials
 
 ### Resource Enumeration
 
-- `aws elbv2 describe-load-balancers` - ALB/NLB/GWLB
-- `aws elb describe-load-balancers` - Classic ELB
-- `aws elbv2 describe-listeners` - TLS certificates on ALB/NLB
-- `aws acm describe-certificate` - Certificate domain details
-- `aws ecs list-clusters` / `describe-tasks` - ECS containers
-- `aws route53 list-hosted-zones` / `list-resource-record-sets` - DNS zones
+- `elbv2.describe_load_balancers()` - ALB/NLB/GWLB
+- `elb.describe_load_balancers()` - Classic ELB
+- `elbv2.describe_listeners()` - TLS certificates on ALB/NLB
+- `acm.describe_certificate()` - Certificate domain details
+- `ecs.list_clusters()` / `describe_tasks()` - ECS containers
+- `route53.list_hosted_zones()` / `list_resource_record_sets()` - DNS zones
 
 ### Organization Operations (optional)
 
-- `aws organizations list-accounts` - List all org accounts
-- `aws organizations describe-organization` - Identify master account
-
-## Code Structure
-
-The script is organized into sections:
-
-1. **Utility Functions**: `format_age()`, `get_task_age_days()`
-2. **SSO Functions**: Token caching, login, credential retrieval
-3. **AWS CLI Wrapper**: `run_aws_cli()`, `run_sso_command()`
-4. **Resource Functions**: Per-service enumeration (ELB, ECS, Route53)
-5. **Command Handlers**: `enumerate_accounts()`, `enumerate_loadbalancers()`, etc.
-6. **Main/CLI**: Argument parsing and command routing
+- `organizations.list_accounts()` - List all org accounts
+- `organizations.describe_organization()` - Identify master account
 
 ## Development Setup
 

@@ -6,7 +6,6 @@ from typing import Optional
 
 import boto3
 
-from .cli import run_aws_cli
 from .client import get_sso_client
 
 ROLE_NAME = "SecurityAudit"
@@ -105,10 +104,19 @@ def get_account_roles_concurrent(accounts: list[dict], access_token: str):
     return account_roles
 
 
-def list_org_accounts(region: str = "us-east-1") -> Optional[list[dict]]:
+def list_org_accounts() -> Optional[list[dict]]:
     """List all accounts in the organization using AWS Organizations API."""
-    data = run_aws_cli(["organizations", "list-accounts", "--region", region])
-    return data.get("Accounts", []) if data else None
+    try:
+        client = boto3.client("organizations", region_name="us-east-1")
+        accounts = []
+        paginator = client.get_paginator("list_accounts")
+
+        for page in paginator.paginate():
+            accounts.extend(page.get("Accounts", []))
+
+        return accounts
+    except Exception:
+        return None
 
 
 def get_enumerable_accounts(

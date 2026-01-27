@@ -3,7 +3,7 @@
 import re
 
 from .accounts import ROLE_NAME, get_enumerable_accounts, get_role_credentials
-from .cli import make_aws_env, run_aws_cli
+from .client import get_client_with_credentials
 
 # Patterns for AWS-managed DNS targets (used for external detection)
 AWS_DNS_PATTERNS = [
@@ -33,36 +33,24 @@ def is_aws_target(target: str) -> bool:
     return False
 
 
-def list_hosted_zones(env: dict) -> list[dict]:
+def list_hosted_zones(client) -> list[dict]:
     """List all Route53 hosted zones."""
-    data = run_aws_cli(["route53", "list-hosted-zones"], env)
-    return data.get("HostedZones", []) if data else []
+    zones = []
+    paginator = client.get_paginator("list_hosted_zones")
+
+    for page in paginator.paginate():
+        zones.extend(page.get("HostedZones", []))
+
+    return zones
 
 
-def list_resource_record_sets(zone_id: str, env: dict) -> list[dict]:
-    """List all resource record sets for a hosted zone (handles pagination)."""
+def list_resource_record_sets(zone_id: str, client) -> list[dict]:
+    """List all resource record sets for a hosted zone."""
     all_records = []
-    next_record_name = None
-    next_record_type = None
+    paginator = client.get_paginator("list_resource_record_sets")
 
-    while True:
-        args = ["route53", "list-resource-record-sets", "--hosted-zone-id", zone_id]
-        if next_record_name:
-            args.extend(["--start-record-name", next_record_name])
-        if next_record_type:
-            args.extend(["--start-record-type", next_record_type])
-
-        data = run_aws_cli(args, env)
-        if not data:
-            break
-
-        all_records.extend(data.get("ResourceRecordSets", []))
-
-        if not data.get("IsTruncated", False):
-            break
-
-        next_record_name = data.get("NextRecordName")
-        next_record_type = data.get("NextRecordType")
+    for page in paginator.paginate(HostedZoneId=zone_id):
+        all_records.extend(page.get("ResourceRecordSets", []))
 
     return all_records
 
@@ -165,10 +153,11 @@ def enumerate_route53(args):
             print()
             continue
 
-        env = make_aws_env(credentials)
+        # Create Route53 client (global service, no region needed)
+        route53 = get_client_with_credentials("route53", credentials)
 
-        # Enumerate Route53 hosted zones (global service, no region needed)
-        hosted_zones = list_hosted_zones(env)
+        # Enumerate Route53 hosted zones
+        hosted_zones = list_hosted_zones(route53)
         found_zones = False
 
         if hosted_zones:
@@ -191,7 +180,7 @@ def enumerate_route53(args):
 
                 # Show records if requested
                 if show_records:
-                    records = list_resource_record_sets(zone_id, env)
+                    records = list_resource_record_sets(zone_id, route53)
                     external_count = 0
                     shown_count = 0
 

@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 
 from .accounts import ROLE_NAME, get_enumerable_accounts, get_role_credentials
-from .cli import make_aws_env, run_aws_cli
+from .client import get_client_with_credentials
 
 
 def format_age(started_at: str) -> str:
@@ -39,71 +39,65 @@ def get_task_age_days(started_at: str) -> float:
         return 0.0
 
 
-def list_ecs_clusters(region: str, env: dict) -> list[str]:
+def list_ecs_clusters(ecs_client) -> list[str]:
     """List all ECS clusters in a region."""
-    data = run_aws_cli(["ecs", "list-clusters", "--region", region], env)
-    return data.get("clusterArns", []) if data else []
+    cluster_arns = []
+    paginator = ecs_client.get_paginator("list_clusters")
+
+    for page in paginator.paginate():
+        cluster_arns.extend(page.get("clusterArns", []))
+
+    return cluster_arns
 
 
-def list_ecs_services(cluster_arn: str, region: str, env: dict) -> list[str]:
+def list_ecs_services(cluster_arn: str, ecs_client) -> list[str]:
     """List all services in an ECS cluster."""
-    data = run_aws_cli(
-        ["ecs", "list-services", "--cluster", cluster_arn, "--region", region], env
-    )
-    return data.get("serviceArns", []) if data else []
+    service_arns = []
+    paginator = ecs_client.get_paginator("list_services")
+
+    for page in paginator.paginate(cluster=cluster_arn):
+        service_arns.extend(page.get("serviceArns", []))
+
+    return service_arns
 
 
 def list_ecs_tasks(
-    cluster_arn: str, region: str, env: dict, service_arn: str | None = None
+    cluster_arn: str, ecs_client, service_arn: str | None = None
 ) -> list[str]:
     """List running tasks in an ECS cluster, optionally filtered by service."""
-    args = [
-        "ecs",
-        "list-tasks",
-        "--cluster",
-        cluster_arn,
-        "--desired-status",
-        "RUNNING",
-        "--region",
-        region,
-    ]
+    task_arns = []
+    paginator = ecs_client.get_paginator("list_tasks")
+
+    paginate_kwargs = {"cluster": cluster_arn, "desiredStatus": "RUNNING"}
     if service_arn:
-        args.extend(["--service-name", service_arn])
-    data = run_aws_cli(args, env)
-    return data.get("taskArns", []) if data else []
+        paginate_kwargs["serviceName"] = service_arn
+
+    for page in paginator.paginate(**paginate_kwargs):
+        task_arns.extend(page.get("taskArns", []))
+
+    return task_arns
 
 
 def describe_ecs_tasks(
-    cluster_arn: str, task_arns: list[str], region: str, env: dict
+    cluster_arn: str, task_arns: list[str], ecs_client
 ) -> list[dict]:
     """Get detailed information about ECS tasks."""
     if not task_arns:
         return []
-    data = run_aws_cli(
-        ["ecs", "describe-tasks", "--cluster", cluster_arn, "--tasks"]
-        + task_arns
-        + ["--region", region],
-        env,
-    )
-    return data.get("tasks", []) if data else []
+    try:
+        response = ecs_client.describe_tasks(cluster=cluster_arn, tasks=task_arns)
+        return response.get("tasks", [])
+    except Exception:
+        return []
 
 
-def get_ecs_tags(resource_arn: str, region: str, env: dict) -> dict[str, str]:
+def get_ecs_tags(resource_arn: str, ecs_client) -> dict[str, str]:
     """Get tags for an ECS resource."""
-    data = run_aws_cli(
-        [
-            "ecs",
-            "list-tags-for-resource",
-            "--resource-arn",
-            resource_arn,
-            "--region",
-            region,
-        ],
-        env,
-    )
-    if not data:
+    try:
+        response = ecs_client.list_tags_for_resource(resourceArn=resource_arn)
+        return {tag["key"]: tag["value"] for tag in response.get("tags", [])}
+    except Exception:
         return {}
-    return {tag["key"]: tag["value"] for tag in data.get("tags", [])}
 
 
 def enumerate_ecs(args):
@@ -175,15 +169,16 @@ def enumerate_ecs(args):
             print()
             continue
 
-        env = make_aws_env(credentials)
-
         # Enumerate ECS per region
         found_containers = False
         for region in regions:
             print(f"  Region: {region}")
 
+            # Create regional ECS client
+            ecs_client = get_client_with_credentials("ecs", credentials, region)
+
             # Get all clusters
-            cluster_arns = list_ecs_clusters(region, env)
+            cluster_arns = list_ecs_clusters(ecs_client)
             if not cluster_arns:
                 continue
 
@@ -191,7 +186,7 @@ def enumerate_ecs(args):
                 cluster_name = cluster_arn.split("/")[-1]
 
                 # Get services in the cluster
-                service_arns = list_ecs_services(cluster_arn, region, env)
+                service_arns = list_ecs_services(cluster_arn, ecs_client)
 
                 # Track tasks we've seen to avoid duplicates
                 seen_task_arns = set()
@@ -203,12 +198,12 @@ def enumerate_ecs(args):
                     # Get service tags once per service (if --show-tags)
                     service_tags = {}
                     if args.show_tags:
-                        service_tags = get_ecs_tags(service_arn, region, env)
+                        service_tags = get_ecs_tags(service_arn, ecs_client)
 
-                    task_arns = list_ecs_tasks(cluster_arn, region, env, service_arn)
+                    task_arns = list_ecs_tasks(cluster_arn, ecs_client, service_arn)
 
                     if task_arns:
-                        tasks = describe_ecs_tasks(cluster_arn, task_arns, region, env)
+                        tasks = describe_ecs_tasks(cluster_arn, task_arns, ecs_client)
                         for task in tasks:
                             task_arn = task.get("taskArn", "")
                             started_at = task.get("startedAt", "")
@@ -242,7 +237,7 @@ def enumerate_ecs(args):
                                     if service_tags:
                                         for key, value in sorted(service_tags.items()):
                                             print(f"      Service Tag: {key}={value}")
-                                    task_tags = get_ecs_tags(task_arn, region, env)
+                                    task_tags = get_ecs_tags(task_arn, ecs_client)
                                     if task_tags:
                                         for key, value in sorted(task_tags.items()):
                                             print(f"      Task Tag: {key}={value}")
@@ -250,12 +245,12 @@ def enumerate_ecs(args):
                                 found_containers = True
 
                 # Get standalone tasks (not associated with a service)
-                all_task_arns = list_ecs_tasks(cluster_arn, region, env)
+                all_task_arns = list_ecs_tasks(cluster_arn, ecs_client)
                 standalone_tasks = [t for t in all_task_arns if t not in seen_task_arns]
 
                 if standalone_tasks:
                     tasks = describe_ecs_tasks(
-                        cluster_arn, standalone_tasks, region, env
+                        cluster_arn, standalone_tasks, ecs_client
                     )
                     for task in tasks:
                         task_arn = task.get("taskArn", "")
@@ -282,7 +277,7 @@ def enumerate_ecs(args):
                             )
 
                             if args.show_tags:
-                                task_tags = get_ecs_tags(task_arn, region, env)
+                                task_tags = get_ecs_tags(task_arn, ecs_client)
                                 if task_tags:
                                     for key, value in sorted(task_tags.items()):
                                         print(f"      Task Tag: {key}={value}")

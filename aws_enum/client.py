@@ -26,3 +26,23 @@ def get_sso_client():
             "sso", region_name=_sso_region, config=BOTO_CONFIG
         )
     return _thread_local.sso_client
+
+
+def get_client_with_credentials(
+    service: str, credentials: dict, region: str | None = None
+):
+    """Create a boto3 client using assumed-role credentials.
+
+    Args:
+        service: AWS service name (e.g., 'route53', 'elbv2')
+        credentials: Credentials dict from get_role_credentials()
+        region: AWS region (optional for global services like Route53)
+    """
+    return boto3.client(
+        service,
+        region_name=region,
+        aws_access_key_id=credentials["accessKeyId"],
+        aws_secret_access_key=credentials["secretAccessKey"],
+        aws_session_token=credentials["sessionToken"],
+        config=BOTO_CONFIG,
+    )

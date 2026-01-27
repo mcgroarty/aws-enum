@@ -1,38 +1,8 @@
 """CLI helpers and main entry point."""
 
 import argparse
-import json
-import os
-import subprocess
-from typing import Optional
 
 REGIONS = ["us-west-2"]
-
-
-def run_aws_cli(args: list[str], env: Optional[dict] = None) -> Optional[dict]:
-    """Run an AWS CLI command and return parsed JSON output."""
-    result = subprocess.run(
-        ["aws"] + args + ["--output", "json"], capture_output=True, text=True, env=env
-    )
-
-    if result.returncode != 0:
-        return None
-
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return None
-
-
-def make_aws_env(credentials: dict) -> dict:
-    """Create environment dict with AWS credentials."""
-    env = dict(os.environ)
-    env["AWS_ACCESS_KEY_ID"] = credentials["accessKeyId"]
-    env["AWS_SECRET_ACCESS_KEY"] = credentials["secretAccessKey"]
-    env["AWS_SESSION_TOKEN"] = credentials["sessionToken"]
-    # Clear profile to avoid conflicts
-    env.pop("AWS_PROFILE", None)
-    return env
 
 
 def main():
