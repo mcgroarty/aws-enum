@@ -6,11 +6,27 @@ from .accounts import ROLE_NAME, get_enumerable_accounts, get_role_credentials
 from .client import get_client_with_credentials
 
 
-def format_age(started_at: str) -> str:
+def _parse_started_at(started_at: str | datetime) -> datetime | None:
+    """Parse task startedAt into a timezone-aware datetime."""
+    if isinstance(started_at, datetime):
+        if started_at.tzinfo is None:
+            return started_at.replace(tzinfo=timezone.utc)
+        return started_at
+    if not started_at:
+        return None
+    try:
+        return datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def format_age(started_at: str | datetime) -> str:
     """Format task age as human-readable string."""
     try:
         # Parse ISO format timestamp
-        start_time = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        start_time = _parse_started_at(started_at)
+        if not start_time:
+            return "unknown"
         now = datetime.now(timezone.utc)
         delta = now - start_time
 
@@ -28,10 +44,12 @@ def format_age(started_at: str) -> str:
         return "unknown"
 
 
-def get_task_age_days(started_at: str) -> float:
+def get_task_age_days(started_at: str | datetime) -> float:
     """Get task age in days as a float."""
     try:
-        start_time = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        start_time = _parse_started_at(started_at)
+        if not start_time:
+            return 0.0
         now = datetime.now(timezone.utc)
         delta = now - start_time
         return delta.total_seconds() / 86400  # seconds per day
