@@ -1,5 +1,6 @@
 """SSO authentication handling."""
 
+import configparser
 import json
 import os
 import subprocess
@@ -14,7 +15,32 @@ def get_sso_profile() -> str:
     return os.environ.get("AWS_PROFILE", "default")
 
 
-def get_cached_access_token() -> Optional[tuple[str, str]]:
+def _get_sso_profile_config(profile: str) -> tuple[Optional[str], Optional[str]]:
+    """Return (sso_start_url, sso_region) for a profile from ~/.aws/config."""
+    config_path = Path.home() / ".aws" / "config"
+    if not config_path.exists():
+        return None, None
+
+    config = configparser.RawConfigParser()
+    try:
+        config.read(config_path)
+    except configparser.Error:
+        return None, None
+
+    if profile == "default":
+        section = "default"
+    else:
+        section = f"profile {profile}"
+
+    if not config.has_section(section):
+        return None, None
+
+    start_url = config.get(section, "sso_start_url", fallback=None)
+    region = config.get(section, "sso_region", fallback=None)
+    return start_url, region
+
+
+def get_cached_access_token(profile: str) -> Optional[tuple[str, str]]:
     """Read valid access token from SSO cache.
 
     Returns:
@@ -24,6 +50,8 @@ def get_cached_access_token() -> Optional[tuple[str, str]]:
 
     if not sso_cache_dir.exists():
         return None
+
+    expected_start_url, expected_region = _get_sso_profile_config(profile)
 
     # Find the most recently modified valid token
     best_token = None
@@ -35,8 +63,13 @@ def get_cached_access_token() -> Optional[tuple[str, str]]:
             access_token = data.get("accessToken")
             expires_at = data.get("expiresAt")
             region = data.get("region", "us-east-1")
+            start_url = data.get("startUrl")
 
             if not access_token or not expires_at:
+                continue
+            if expected_start_url and start_url != expected_start_url:
+                continue
+            if expected_region and region != expected_region:
                 continue
 
             # Parse expiration and check validity
@@ -67,7 +100,7 @@ def get_access_token(profile: str) -> tuple[str, str]:
     Returns:
         Tuple of (access_token, sso_region)
     """
-    result = get_cached_access_token()
+    result = get_cached_access_token(profile)
 
     if result:
         return result
@@ -76,7 +109,7 @@ def get_access_token(profile: str) -> tuple[str, str]:
         print("ERROR: SSO login failed.", file=sys.stderr)
         sys.exit(1)
 
-    result = get_cached_access_token()
+    result = get_cached_access_token(profile)
     if not result:
         print("ERROR: Still no valid token after login.", file=sys.stderr)
         sys.exit(1)
