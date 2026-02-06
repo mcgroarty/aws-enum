@@ -102,11 +102,18 @@ def describe_ecs_tasks(
     """Get detailed information about ECS tasks."""
     if not task_arns:
         return []
-    try:
-        response = ecs_client.describe_tasks(cluster=cluster_arn, tasks=task_arns)
-        return response.get("tasks", [])
-    except Exception:
-        return []
+
+    all_tasks = []
+    # AWS DescribeTasks API limit: 100 tasks per call
+    batch_size = 100
+    for i in range(0, len(task_arns), batch_size):
+        batch = task_arns[i : i + batch_size]
+        try:
+            response = ecs_client.describe_tasks(cluster=cluster_arn, tasks=batch)
+            all_tasks.extend(response.get("tasks", []))
+        except Exception:
+            pass
+    return all_tasks
 
 
 def get_ecs_tags(resource_arn: str, ecs_client) -> dict[str, str]:
