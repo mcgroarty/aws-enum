@@ -52,10 +52,24 @@ def get_role_credentials(
         return None
 
 
-def get_master_account_id() -> Optional[str]:
-    """Get the master account ID from AWS Organizations."""
+def get_master_account_id(credentials: Optional[dict] = None) -> Optional[str]:
+    """Get the master account ID from AWS Organizations.
+
+    Args:
+        credentials: Optional SSO role credentials. If not provided,
+                     falls back to default credential chain.
+    """
     try:
-        client = boto3.client("organizations", region_name="us-east-1")
+        if credentials:
+            client = boto3.client(
+                "organizations",
+                region_name="us-east-1",
+                aws_access_key_id=credentials["accessKeyId"],
+                aws_secret_access_key=credentials["secretAccessKey"],
+                aws_session_token=credentials["sessionToken"],
+            )
+        else:
+            client = boto3.client("organizations", region_name="us-east-1")
         response = client.describe_organization()
         return response.get("Organization", {}).get("MasterAccountId")
     except Exception:
@@ -147,20 +161,25 @@ def get_enumerable_accounts(
         elapsed = time.time() - start_time
         print(f"  Listed {len(accounts)} accounts in {elapsed:.2f}s")
 
-    # Get master account ID and roles concurrently
+    # Get roles for all accounts
     if show_progress:
-        print("  Identifying master account and checking roles...")
+        print("  Checking account roles...")
 
     roles_start = time.time()
+    account_roles = get_account_roles_concurrent(accounts, access_token)
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        master_future = executor.submit(get_master_account_id)
-        roles_future = executor.submit(
-            get_account_roles_concurrent, accounts, access_token
-        )
+    # Get master account ID using SSO credentials from first account with a role
+    if show_progress:
+        print("\n  Identifying master account...")
 
-        master_account_id = master_future.result()
-        account_roles = roles_future.result()
+    master_account_id = None
+    for account in accounts:
+        roles = account_roles.get(account["accountId"], [])
+        if ROLE_NAME in roles:
+            creds = get_role_credentials(account["accountId"], ROLE_NAME, access_token)
+            if creds:
+                master_account_id = get_master_account_id(creds)
+                break
 
     if show_progress:
         elapsed = time.time() - roles_start
