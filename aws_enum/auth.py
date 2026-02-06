@@ -31,9 +31,11 @@ def _get_sso_profile_config(profile: str) -> tuple[Optional[str], Optional[str]]
         section = "default"
     else:
         section = f"profile {profile}"
-
-    if not config.has_section(section):
-        return None, None
+        # Note: skip has_section for "default" because configparser treats
+        # [DEFAULT] (case-insensitive) as a magic section that doesn't appear
+        # in has_section(). AWS uses [default] for the default profile.
+        if not config.has_section(section):
+            return None, None
 
     start_url = config.get(section, "sso_start_url", fallback=None)
     region = config.get(section, "sso_region", fallback=None)
