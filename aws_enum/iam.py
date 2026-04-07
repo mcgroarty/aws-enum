@@ -64,6 +64,17 @@ ROLE_TRUST_CSV_COLUMNS = [
     "notes",
 ]
 
+HYGIENE_CSV_COLUMNS = [
+    "account_name",
+    "account_id",
+    "finding_type",
+    "resource_type",
+    "resource_name",
+    "severity",
+    "last_used",
+    "details",
+]
+
 
 def _parse_iam_timestamp(value: str | datetime | None) -> datetime | None:
     """Parse an IAM timestamp into a timezone-aware datetime."""
@@ -164,6 +175,51 @@ def _classify_permission_summary(
         return "custom/unknown"
 
     return "none"
+
+
+def _is_admin_equivalent(permission_summary: str) -> bool:
+    """Check whether a coarse permission summary is admin-equivalent."""
+    return permission_summary == "admin-equivalent"
+
+
+def _days_since(value: str | datetime | None) -> float | None:
+    """Return age in days from a timestamp-like value."""
+    parsed = _parse_iam_timestamp(value)
+    if parsed is None:
+        return None
+    return (datetime.now(timezone.utc) - parsed).total_seconds() / 86400
+
+
+def _default_inactive_days(args) -> float:
+    """Return the active stale-age threshold for IAM hygiene."""
+    return args.inactive_days if args.inactive_days is not None else 90.0
+
+
+def _service_linked_role(role: dict) -> bool:
+    """Check whether a role appears to be AWS service-linked."""
+    role_name = role.get("role_name") or role.get("RoleName") or ""
+    role_path = role.get("path") or role.get("Path") or ""
+    return role_name.startswith("AWSServiceRoleFor") or role_path.startswith(
+        "/aws-service-role/"
+    )
+
+
+def _suspicious_name_reason(name: str) -> str:
+    """Return a short reason when a principal name looks noteworthy."""
+    lowered = name.lower()
+    patterns = [
+        (r"break[-_ ]?glass", "break-glass naming"),
+        (r"emergency", "emergency naming"),
+        (r"backdoor", "backdoor naming"),
+        (r"temp|temporary", "temporary naming"),
+        (r"legacy|old", "legacy naming"),
+        (r"vendor|third[-_ ]?party|contractor|external", "external-party naming"),
+        (r"debug", "debug naming"),
+    ]
+    for pattern, reason in patterns:
+        if re.search(pattern, lowered):
+            return reason
+    return ""
 
 
 def _paginate(iam_client, operation_name: str, result_key: str, **kwargs) -> list:
@@ -434,6 +490,65 @@ def _build_role_trust_records(
     return records
 
 
+def _build_role_inventory_records(
+    account_name: str, account_id: str, iam_client
+) -> list[dict]:
+    """Build role inventory records for IAM hygiene analysis."""
+    roles = _paginate(iam_client, "list_roles", "Roles")
+    records = []
+
+    for role_summary in roles:
+        role_name = role_summary["RoleName"]
+        role_detail = iam_client.get_role(RoleName=role_name).get("Role", {})
+        attached_policies = sorted(
+            policy["PolicyName"]
+            for policy in _paginate(
+                iam_client,
+                "list_attached_role_policies",
+                "AttachedPolicies",
+                RoleName=role_name,
+            )
+        )
+        inline_policies = sorted(
+            _paginate(
+                iam_client, "list_role_policies", "PolicyNames", RoleName=role_name
+            )
+        )
+
+        records.append(
+            {
+                "account_name": account_name,
+                "account_id": account_id,
+                "role_name": role_name,
+                "role_arn": role_detail.get("Arn", role_summary.get("Arn", "")),
+                "path": role_detail.get("Path", role_summary.get("Path", "")),
+                "created_at": _format_date(
+                    role_detail.get("CreateDate", role_summary.get("CreateDate"))
+                ),
+                "last_used": _format_date(
+                    role_detail.get("RoleLastUsed", {}).get("LastUsedDate")
+                ),
+                "attached_policies": attached_policies,
+                "inline_policy_count": len(inline_policies),
+                "permissions_boundary": role_detail.get("PermissionsBoundary", {}).get(
+                    "PermissionsBoundaryArn", ""
+                ),
+                "permission_summary": _classify_permission_summary(
+                    attached_policies,
+                    len(inline_policies),
+                ),
+                "is_service_linked": _service_linked_role(
+                    {
+                        "role_name": role_name,
+                        "path": role_detail.get("Path", role_summary.get("Path", "")),
+                    }
+                ),
+            }
+        )
+
+    return records
+
+
 def _get_group_policy_info(
     group_name: str, iam_client, cache: dict[str, dict[str, list[str] | int]]
 ) -> dict[str, list[str] | int]:
@@ -602,6 +717,306 @@ def _role_trust_matches_filters(record: dict, args) -> bool:
     return True
 
 
+def _append_finding(
+    findings: list[dict],
+    *,
+    account_name: str,
+    account_id: str,
+    finding_type: str,
+    resource_type: str,
+    resource_name: str,
+    severity: str,
+    last_used: str,
+    details: str,
+    admin_related: bool = False,
+) -> None:
+    """Append a normalized hygiene finding."""
+    findings.append(
+        {
+            "account_name": account_name,
+            "account_id": account_id,
+            "finding_type": finding_type,
+            "resource_type": resource_type,
+            "resource_name": resource_name,
+            "severity": severity,
+            "last_used": last_used,
+            "details": details,
+            "admin_related": admin_related,
+        }
+    )
+
+
+def _build_hygiene_findings(
+    account_name: str,
+    account_id: str,
+    user_records: list[dict],
+    role_records: list[dict],
+    role_trust_records: list[dict],
+    inactive_days: float,
+) -> list[dict]:
+    """Build derived IAM hygiene findings for one account."""
+    findings = []
+    external_trust_by_role: dict[str, list[dict]] = {}
+    for trust_record in role_trust_records:
+        if trust_record["is_external"] == "yes":
+            external_trust_by_role.setdefault(trust_record["role_name"], []).append(
+                trust_record
+            )
+
+    for record in user_records:
+        has_active_credentials = (
+            record["password_enabled"] == "yes" or int(record["access_key_count"]) > 0
+        )
+        last_used_age = _days_since(record["last_activity"])
+        last_used = record["last_activity"]
+
+        if int(record["access_key_count"]) > 0 and (
+            last_used_age is None or last_used_age >= inactive_days
+        ):
+            _append_finding(
+                findings,
+                account_name=account_name,
+                account_id=account_id,
+                finding_type="user_stale_access_keys",
+                resource_type="user",
+                resource_name=record["user_name"],
+                severity="high",
+                last_used=last_used,
+                details=(
+                    f"Active access keys present with no use in "
+                    f"{inactive_days:.0f}+ days"
+                    if last_used_age is not None
+                    else "Active access keys present with no recorded use"
+                ),
+            )
+
+        if record["password_enabled"] == "yes" and (
+            last_used_age is None or last_used_age >= inactive_days
+        ):
+            _append_finding(
+                findings,
+                account_name=account_name,
+                account_id=account_id,
+                finding_type="user_stale_console_password",
+                resource_type="user",
+                resource_name=record["user_name"],
+                severity="medium",
+                last_used=last_used,
+                details=(
+                    f"Console password enabled with no use in {inactive_days:.0f}+ days"
+                    if last_used_age is not None
+                    else "Console password enabled with no recorded use"
+                ),
+            )
+
+        if has_active_credentials and record["mfa_active"] == "no":
+            _append_finding(
+                findings,
+                account_name=account_name,
+                account_id=account_id,
+                finding_type="user_no_mfa_with_credentials",
+                resource_type="user",
+                resource_name=record["user_name"],
+                severity="high",
+                last_used=last_used,
+                details="User has active console or access-key credentials without MFA",
+            )
+
+        if _is_admin_equivalent(record["permission_summary"]):
+            _append_finding(
+                findings,
+                account_name=account_name,
+                account_id=account_id,
+                finding_type="user_admin_equivalent",
+                resource_type="user",
+                resource_name=record["user_name"],
+                severity="high",
+                last_used=last_used,
+                details=(
+                    "User appears admin-equivalent based on attached "
+                    "policy heuristics"
+                ),
+                admin_related=True,
+            )
+
+        if int(record["inline_policy_count"]) > 0:
+            _append_finding(
+                findings,
+                account_name=account_name,
+                account_id=account_id,
+                finding_type="user_inline_policies",
+                resource_type="user",
+                resource_name=record["user_name"],
+                severity="medium",
+                last_used=last_used,
+                details=f"User has {record['inline_policy_count']} inline polic(ies)",
+            )
+
+        if (
+            _is_admin_equivalent(record["permission_summary"])
+            and not record["permissions_boundary"]
+        ):
+            _append_finding(
+                findings,
+                account_name=account_name,
+                account_id=account_id,
+                finding_type="user_admin_no_boundary",
+                resource_type="user",
+                resource_name=record["user_name"],
+                severity="medium",
+                last_used=last_used,
+                details="Admin-equivalent user has no permissions boundary",
+                admin_related=True,
+            )
+
+        suspicious_reason = _suspicious_name_reason(record["user_name"])
+        if suspicious_reason:
+            _append_finding(
+                findings,
+                account_name=account_name,
+                account_id=account_id,
+                finding_type="user_suspicious_name",
+                resource_type="user",
+                resource_name=record["user_name"],
+                severity="low",
+                last_used=last_used,
+                details=(
+                    "User name suggests manual or exceptional access: "
+                    f"{suspicious_reason}"
+                ),
+            )
+
+    for record in role_records:
+        if record["is_service_linked"]:
+            continue
+
+        last_used_age = _days_since(record["last_used"])
+        last_used = record["last_used"]
+
+        if last_used_age is None or last_used_age >= inactive_days:
+            severity = (
+                "medium"
+                if _is_admin_equivalent(record["permission_summary"])
+                else "low"
+            )
+            _append_finding(
+                findings,
+                account_name=account_name,
+                account_id=account_id,
+                finding_type="role_stale_or_unused",
+                resource_type="role",
+                resource_name=record["role_name"],
+                severity=severity,
+                last_used=last_used,
+                details=(
+                    f"Role has not been used in {inactive_days:.0f}+ days"
+                    if last_used_age is not None
+                    else "Role has no recorded last-used timestamp"
+                ),
+                admin_related=_is_admin_equivalent(record["permission_summary"]),
+            )
+
+        if _is_admin_equivalent(record["permission_summary"]):
+            _append_finding(
+                findings,
+                account_name=account_name,
+                account_id=account_id,
+                finding_type="role_admin_equivalent",
+                resource_type="role",
+                resource_name=record["role_name"],
+                severity="high",
+                last_used=last_used,
+                details=(
+                    "Role appears admin-equivalent based on attached "
+                    "policy heuristics"
+                ),
+                admin_related=True,
+            )
+
+        if int(record["inline_policy_count"]) > 0:
+            _append_finding(
+                findings,
+                account_name=account_name,
+                account_id=account_id,
+                finding_type="role_inline_policies",
+                resource_type="role",
+                resource_name=record["role_name"],
+                severity="medium",
+                last_used=last_used,
+                details=f"Role has {record['inline_policy_count']} inline polic(ies)",
+            )
+
+        if (
+            _is_admin_equivalent(record["permission_summary"])
+            and not record["permissions_boundary"]
+        ):
+            _append_finding(
+                findings,
+                account_name=account_name,
+                account_id=account_id,
+                finding_type="role_admin_no_boundary",
+                resource_type="role",
+                resource_name=record["role_name"],
+                severity="medium",
+                last_used=last_used,
+                details="Admin-equivalent role has no permissions boundary",
+                admin_related=True,
+            )
+
+        suspicious_reason = _suspicious_name_reason(record["role_name"])
+        if suspicious_reason:
+            _append_finding(
+                findings,
+                account_name=account_name,
+                account_id=account_id,
+                finding_type="role_suspicious_name",
+                resource_type="role",
+                resource_name=record["role_name"],
+                severity="low",
+                last_used=last_used,
+                details=(
+                    "Role name suggests manual or exceptional access: "
+                    f"{suspicious_reason}"
+                ),
+            )
+
+        external_trusts = external_trust_by_role.get(record["role_name"], [])
+        if external_trusts:
+            highest_trust_risk = "high"
+            if all(trust["trust_risk"] != "high" for trust in external_trusts):
+                highest_trust_risk = "medium"
+            trusted_targets = ", ".join(
+                sorted({trust["trusted_principal"] for trust in external_trusts})
+            )
+            finding_type = "role_external_trust"
+            admin_related = False
+            if _is_admin_equivalent(record["permission_summary"]):
+                finding_type = "role_admin_external_trust"
+                admin_related = True
+
+            _append_finding(
+                findings,
+                account_name=account_name,
+                account_id=account_id,
+                finding_type=finding_type,
+                resource_type="role",
+                resource_name=record["role_name"],
+                severity=highest_trust_risk,
+                last_used=last_used,
+                details=f"Trusted by external or broad principals: {trusted_targets}",
+                admin_related=admin_related,
+            )
+
+    return findings
+
+
+def _hygiene_matches_filters(record: dict, args) -> bool:
+    """Apply CLI filters to a hygiene finding."""
+    if args.admin_only and not record.get("admin_related", False):
+        return False
+    return True
+
+
 def _print_summary_record(summary_record: dict) -> None:
     """Print account-level IAM summary information."""
     print("  IAM Summary:")
@@ -716,6 +1131,55 @@ def _print_role_trust_records(
             print(f"      Notes: {record['notes']}")
 
 
+def _print_hygiene_records(
+    filtered_records: list[dict], all_records: list[dict], args
+) -> None:
+    """Print IAM hygiene findings or summary counts."""
+    print("  IAM Hygiene:")
+
+    if args.summary_only:
+        severity_counts = {
+            "high": sum(
+                1 for record in filtered_records if record["severity"] == "high"
+            ),
+            "medium": sum(
+                1 for record in filtered_records if record["severity"] == "medium"
+            ),
+            "low": sum(1 for record in filtered_records if record["severity"] == "low"),
+        }
+        print(f"    Matched findings: {len(filtered_records)} / {len(all_records)}")
+        print(
+            f"    High: {severity_counts['high']}  "
+            f"Medium: {severity_counts['medium']}  "
+            f"Low: {severity_counts['low']}"
+        )
+        return
+
+    if not filtered_records:
+        print("    (no matching hygiene findings)")
+        return
+
+    severity_rank = {"high": 0, "medium": 1, "low": 2}
+    sorted_records = sorted(
+        filtered_records,
+        key=lambda record: (
+            severity_rank.get(record["severity"], 3),
+            record["resource_type"],
+            record["resource_name"].lower(),
+            record["finding_type"],
+        ),
+    )
+
+    for record in sorted_records:
+        print(
+            f"    {record['resource_type']:5} {record['resource_name']:30} "
+            f"severity:{record['severity']:6} "
+            f"last:{record['last_used']:10} "
+            f"{record['finding_type']}"
+        )
+        print(f"      {record['details']}")
+
+
 def enumerate_iam(args):
     """Enumerate IAM account summary and users across AWS SSO accounts."""
     from .accounts import ROLE_NAME, get_enumerable_accounts, get_role_credentials
@@ -725,7 +1189,8 @@ def enumerate_iam(args):
     show_summary = args.summary
     show_users = args.users
     show_role_trust = args.role_trust
-    if not show_summary and not show_users and not show_role_trust:
+    show_hygiene = args.hygiene
+    if not show_summary and not show_users and not show_role_trust and not show_hygiene:
         show_summary = True
 
     selected_reports = [
@@ -734,13 +1199,17 @@ def enumerate_iam(args):
             ("summary", show_summary),
             ("users", show_users),
             ("role_trust", show_role_trust),
+            ("hygiene", show_hygiene),
         )
         if enabled
     ]
 
     if args.csv and len(selected_reports) > 1:
         print("ERROR: --csv supports a single IAM report at a time.")
-        print("Use one of --summary, --users, or --role-trust when exporting CSV.")
+        print(
+            "Use one of --summary, --users, --role-trust, "
+            "or --hygiene when exporting CSV."
+        )
         return
 
     profile = get_sso_profile()
@@ -790,8 +1259,12 @@ def enumerate_iam(args):
                 fieldnames = USER_CSV_COLUMNS
             elif show_role_trust:
                 fieldnames = ROLE_TRUST_CSV_COLUMNS
+            elif show_hygiene:
+                fieldnames = HYGIENE_CSV_COLUMNS
             csv_file = open(args.csv, "w", newline="")
-            csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+            csv_writer = csv.DictWriter(
+                csv_file, fieldnames=fieldnames, extrasaction="ignore"
+            )
             csv_writer.writeheader()
 
         for account, roles, is_master in enumerable_accounts:
@@ -814,6 +1287,9 @@ def enumerate_iam(args):
 
             iam_client = get_client_with_credentials("iam", credentials)
             found_results = False
+            user_records = None
+            role_trust_records = None
+            role_inventory_records = None
 
             if show_summary:
                 try:
@@ -829,9 +1305,11 @@ def enumerate_iam(args):
 
             if show_users:
                 try:
-                    all_records = _build_user_records(
-                        account_name, account_id, iam_client
-                    )
+                    if user_records is None:
+                        user_records = _build_user_records(
+                            account_name, account_id, iam_client
+                        )
+                    all_records = user_records
                     filtered_records = [
                         record
                         for record in all_records
@@ -848,12 +1326,14 @@ def enumerate_iam(args):
 
             if show_role_trust:
                 try:
-                    all_records = _build_role_trust_records(
-                        account_name,
-                        account_id,
-                        iam_client,
-                        org_id=args.org_id,
-                    )
+                    if role_trust_records is None:
+                        role_trust_records = _build_role_trust_records(
+                            account_name,
+                            account_id,
+                            iam_client,
+                            org_id=args.org_id,
+                        )
+                    all_records = role_trust_records
                     filtered_records = [
                         record
                         for record in all_records
@@ -867,6 +1347,45 @@ def enumerate_iam(args):
                         found_results = True
                 except Exception as exc:
                     print(f"  ERROR: Failed to retrieve IAM role trust: {exc}")
+
+            if show_hygiene:
+                try:
+                    if user_records is None:
+                        user_records = _build_user_records(
+                            account_name, account_id, iam_client
+                        )
+                    if role_inventory_records is None:
+                        role_inventory_records = _build_role_inventory_records(
+                            account_name, account_id, iam_client
+                        )
+                    if role_trust_records is None:
+                        role_trust_records = _build_role_trust_records(
+                            account_name,
+                            account_id,
+                            iam_client,
+                            org_id=args.org_id,
+                        )
+                    all_records = _build_hygiene_findings(
+                        account_name,
+                        account_id,
+                        user_records,
+                        role_inventory_records,
+                        role_trust_records,
+                        _default_inactive_days(args),
+                    )
+                    filtered_records = [
+                        record
+                        for record in all_records
+                        if _hygiene_matches_filters(record, args)
+                    ]
+                    _print_hygiene_records(filtered_records, all_records, args)
+                    if csv_writer:
+                        for record in filtered_records:
+                            csv_writer.writerow(record)
+                    if filtered_records or (args.summary_only and all_records):
+                        found_results = True
+                except Exception as exc:
+                    print(f"  ERROR: Failed to retrieve IAM hygiene findings: {exc}")
 
             print()
 

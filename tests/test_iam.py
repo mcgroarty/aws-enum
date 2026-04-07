@@ -15,14 +15,17 @@ class FakePaginator:
 
 
 class FakeIamClient:
-    def __init__(self, roles, role_details):
+    def __init__(self, roles, role_details, operation_pages=None):
         self.roles = roles
         self.role_details = role_details
+        self.operation_pages = operation_pages or {}
 
     def get_paginator(self, operation_name):
-        if operation_name != "list_roles":
-            raise AssertionError(f"Unexpected paginator request: {operation_name}")
-        return FakePaginator([{"Roles": self.roles}])
+        if operation_name == "list_roles":
+            return FakePaginator([{"Roles": self.roles}])
+        if operation_name in self.operation_pages:
+            return FakePaginator(self.operation_pages[operation_name])
+        raise AssertionError(f"Unexpected paginator request: {operation_name}")
 
     def get_role(self, RoleName):
         return {"Role": self.role_details[RoleName]}
@@ -200,6 +203,60 @@ class TestIamHelpers(unittest.TestCase):
         self.assertEqual(records[0]["trust_scope"], "same-org")
         self.assertEqual(records[0]["is_external"], "no")
         self.assertEqual(records[0]["trust_risk"], "low")
+
+    def test_build_hygiene_findings_flags_multiple_risks(self):
+        user_records = [
+            {
+                "user_name": "breakglass-admin",
+                "password_enabled": "yes",
+                "access_key_count": 1,
+                "mfa_active": "no",
+                "last_activity": "never",
+                "permission_summary": "admin-equivalent",
+                "inline_policy_count": 1,
+                "permissions_boundary": "",
+            }
+        ]
+        role_records = [
+            {
+                "role_name": "VendorAdminRole",
+                "last_used": "never",
+                "permission_summary": "admin-equivalent",
+                "inline_policy_count": 1,
+                "permissions_boundary": "",
+                "is_service_linked": False,
+            }
+        ]
+        role_trust_records = [
+            {
+                "role_name": "VendorAdminRole",
+                "is_external": "yes",
+                "trust_risk": "high",
+                "trusted_principal": "arn:aws:iam::999999999999:root",
+            }
+        ]
+
+        findings = iam._build_hygiene_findings(
+            "Prod",
+            "123456789012",
+            user_records,
+            role_records,
+            role_trust_records,
+            90,
+        )
+        finding_types = {finding["finding_type"] for finding in findings}
+
+        self.assertIn("user_no_mfa_with_credentials", finding_types)
+        self.assertIn("user_admin_equivalent", finding_types)
+        self.assertIn("user_suspicious_name", finding_types)
+        self.assertIn("role_admin_external_trust", finding_types)
+        self.assertIn("role_stale_or_unused", finding_types)
+
+    def test_hygiene_matches_filters_admin_only(self):
+        args = SimpleNamespace(admin_only=True)
+
+        self.assertTrue(iam._hygiene_matches_filters({"admin_related": True}, args))
+        self.assertFalse(iam._hygiene_matches_filters({"admin_related": False}, args))
 
 
 if __name__ == "__main__":

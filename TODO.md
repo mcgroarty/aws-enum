@@ -299,13 +299,13 @@ Implemented:
 - `iam --summary`
 - `iam --users`
 - `iam --role-trust`
+- `iam --hygiene`
 
 Remaining high-value work:
-- `iam --hygiene`
 - admin-equivalent principal detection beyond policy-name heuristics
 - permissions-boundary gap reporting
-- stale-role findings using role last-used data
-- suspicious naming-pattern and break-glass account detection
+- richer stale-role prioritization using role last-used data plus trust/privilege
+- broader suspicious naming-pattern and break-glass detection tuning
 
 ### Notes on Scale and Reliability
 

@@ -45,7 +45,7 @@ aws configure sso  # if not already configured
 | `accounts` | List all AWS SSO accounts and available roles |
 | `loadbalancers` | Enumerate ALBs, NLBs, GWLBs, and Classic ELBs |
 | `ecs` | Enumerate running ECS containers |
-| `iam` | Summarize IAM usage, inventory IAM users, and inspect role trust |
+| `iam` | Summarize IAM usage, inspect users/role trust, and flag hygiene issues |
 | `route53` | Enumerate Route53 hosted zones and DNS records |
 
 Use `./aws-enum.py <command> --help` for command-specific options.
@@ -114,6 +114,18 @@ AWS_PROFILE=my-sso-profile ./aws-enum.py loadbalancers
 
 ```bash
 ./aws-enum.py iam --role-trust --external-only --csv iam-role-trust.csv
+```
+
+**Show stale or risky IAM findings:**
+
+```bash
+./aws-enum.py iam --hygiene
+```
+
+**Show only admin-related IAM hygiene findings:**
+
+```bash
+./aws-enum.py iam --hygiene --admin-only
 ```
 
 **Export IAM users inactive for 90+ days to CSV:**

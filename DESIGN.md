@@ -66,6 +66,7 @@ Both can be overridden via command-line options (`--regions`) or by editing the 
 - `iam.generate_credential_report()` / `get_credential_report()` - IAM credential activity
 - `iam.list_users()` / `list_groups_for_user()` - IAM user inventory
 - `iam.list_roles()` / `get_role()` - IAM role trust inventory and last-used data
+- `iam.list_attached_role_policies()` / `list_role_policies()` - Role privilege hygiene
 
 ### Organization Operations (optional)
 

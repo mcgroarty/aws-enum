@@ -121,19 +121,22 @@ Examples:
     # IAM command
     iam_parser = subparsers.add_parser(
         "iam",
-        help="Enumerate IAM summaries and users",
+        help="Enumerate IAM summaries, users, trust, and hygiene",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
   %(prog)s                                         # Show IAM summary per account
   %(prog)s --users                                 # List IAM users
   %(prog)s --role-trust                            # Show role trust relationships
   %(prog)s --role-trust --external-only            # Only show external/suspicious trust
+  %(prog)s --hygiene                               # Show stale/risky IAM findings
+  %(prog)s --hygiene --admin-only                  # Focus on admin-related hygiene issues
   %(prog)s --users --inactive-days 90              # Users inactive for 90+ days
   %(prog)s --users --no-mfa-only                   # Users without MFA
   %(prog)s --users --has-keys-only                 # Users with active access keys
   %(prog)s --summary --users                       # Show summary and detailed users
   %(prog)s --users --csv iam-users.csv             # Export users to CSV
   %(prog)s --role-trust --csv iam-role-trust.csv   # Export role trust to CSV
+  %(prog)s --hygiene --csv iam-hygiene.csv         # Export hygiene findings to CSV
   %(prog)s --accounts "Production,Staging"         # Check specific accounts only
   %(prog)s --first-only                            # Stop after first account with findings
   AWS_PROFILE=prod %(prog)s --summary              # Use specific SSO profile
@@ -153,6 +156,11 @@ Examples:
         "--role-trust",
         action="store_true",
         help="List assumable roles and classify suspicious trust relationships",
+    )
+    iam_parser.add_argument(
+        "--hygiene",
+        action="store_true",
+        help="List stale credentials and risky IAM identity patterns",
     )
     iam_parser.add_argument(
         "--summary-only",
@@ -175,6 +183,11 @@ Examples:
         "--has-keys-only",
         action="store_true",
         help="Only show users with active access keys",
+    )
+    iam_parser.add_argument(
+        "--admin-only",
+        action="store_true",
+        help="For hygiene reports, only show admin-related findings",
     )
     iam_parser.add_argument(
         "--external-only",
