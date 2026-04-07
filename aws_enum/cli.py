@@ -9,6 +9,7 @@ def main():
     """Main entry point for CLI."""
     from .accounts import enumerate_accounts
     from .ecs import enumerate_ecs
+    from .iam import enumerate_iam
     from .loadbalancers import enumerate_loadbalancers
     from .route53 import enumerate_route53
 
@@ -19,6 +20,7 @@ def main():
         epilog="""Available commands:
   accounts         List all AWS SSO accounts and available roles
   ecs              Enumerate running ECS containers
+  iam              Enumerate IAM summaries and users
   loadbalancers    Enumerate ALBs, NLBs, and Classic ELBs
   route53          Enumerate Route53 hosted zones
 
@@ -28,6 +30,7 @@ For help on a specific command, use:
 Examples:
   %(prog)s accounts                         # List all accounts and roles
   %(prog)s ecs                              # List all ECS containers
+  %(prog)s iam                              # Show IAM summary per account
   %(prog)s loadbalancers                    # List all load balancers
   %(prog)s route53                          # List all Route53 hosted zones
   AWS_PROFILE=prod %(prog)s accounts        # Use specific SSO profile
@@ -113,6 +116,95 @@ Examples:
         default=",".join(REGIONS),
         help=f"Comma-separated list of AWS regions to scan "
         f"(default: {','.join(REGIONS)})",
+    )
+
+    # IAM command
+    iam_parser = subparsers.add_parser(
+        "iam",
+        help="Enumerate IAM summaries and users",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  %(prog)s                                         # Show IAM summary per account
+  %(prog)s --users                                 # List IAM users
+  %(prog)s --role-trust                            # Show role trust relationships
+  %(prog)s --role-trust --external-only            # Only show external/suspicious trust
+  %(prog)s --users --inactive-days 90              # Users inactive for 90+ days
+  %(prog)s --users --no-mfa-only                   # Users without MFA
+  %(prog)s --users --has-keys-only                 # Users with active access keys
+  %(prog)s --summary --users                       # Show summary and detailed users
+  %(prog)s --users --csv iam-users.csv             # Export users to CSV
+  %(prog)s --role-trust --csv iam-role-trust.csv   # Export role trust to CSV
+  %(prog)s --accounts "Production,Staging"         # Check specific accounts only
+  %(prog)s --first-only                            # Stop after first account with findings
+  AWS_PROFILE=prod %(prog)s --summary              # Use specific SSO profile
+        """,
+    )
+    iam_parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="Show account-level IAM summary counts",
+    )
+    iam_parser.add_argument(
+        "--users",
+        action="store_true",
+        help="List IAM users with credential and policy summary details",
+    )
+    iam_parser.add_argument(
+        "--role-trust",
+        action="store_true",
+        help="List assumable roles and classify suspicious trust relationships",
+    )
+    iam_parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="For detailed reports, show only counts instead of per-user rows",
+    )
+    iam_parser.add_argument(
+        "--inactive-days",
+        type=float,
+        default=None,
+        help="Only show users whose most recent credential activity "
+        "is older than this many days",
+    )
+    iam_parser.add_argument(
+        "--no-mfa-only",
+        action="store_true",
+        help="Only show users without MFA",
+    )
+    iam_parser.add_argument(
+        "--has-keys-only",
+        action="store_true",
+        help="Only show users with active access keys",
+    )
+    iam_parser.add_argument(
+        "--external-only",
+        action="store_true",
+        help="For role trust reports, only show external or broad trust relationships",
+    )
+    iam_parser.add_argument(
+        "--org-id",
+        type=str,
+        default=None,
+        help="Optional AWS organization ID for classifying org-scoped role trust",
+    )
+    iam_parser.add_argument(
+        "--csv",
+        type=str,
+        metavar="FILE",
+        default=None,
+        help="Export the selected IAM report to CSV",
+    )
+    iam_parser.add_argument(
+        "--accounts",
+        type=str,
+        default=None,
+        help="Comma-separated list of account names or IDs to check "
+        "(default: all accounts)",
+    )
+    iam_parser.add_argument(
+        "--first-only",
+        action="store_true",
+        help="Stop after the first account with IAM findings " "(useful for debugging)",
     )
 
     # Load balancer command
@@ -241,6 +333,7 @@ Examples:
             print("\nAvailable commands:")
             print("  accounts         List all AWS SSO accounts and available roles")
             print("  ecs              Enumerate running ECS containers")
+            print("  iam              Enumerate IAM summaries and users")
             print("  loadbalancers    Enumerate ALBs, NLBs, and Classic ELBs")
             print("  route53          Enumerate Route53 hosted zones")
             print(f"\nFor more information, run: {parser.prog} --help")
@@ -253,6 +346,8 @@ Examples:
         enumerate_loadbalancers(args)
     elif args.command == "ecs":
         enumerate_ecs(args)
+    elif args.command == "iam":
+        enumerate_iam(args)
     elif args.command == "route53":
         enumerate_route53(args)
 

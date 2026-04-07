@@ -17,6 +17,9 @@ AWS resource enumeration tool for multi-account environments using AWS SSO.
 # Enumerate ECS containers
 ./aws-enum.py ecs
 
+# Enumerate IAM summaries or users
+./aws-enum.py iam
+
 # Enumerate Route53 hosted zones
 ./aws-enum.py route53
 ```
@@ -42,6 +45,7 @@ aws configure sso  # if not already configured
 | `accounts` | List all AWS SSO accounts and available roles |
 | `loadbalancers` | Enumerate ALBs, NLBs, GWLBs, and Classic ELBs |
 | `ecs` | Enumerate running ECS containers |
+| `iam` | Summarize IAM usage, inventory IAM users, and inspect role trust |
 | `route53` | Enumerate Route53 hosted zones and DNS records |
 
 Use `./aws-enum.py <command> --help` for command-specific options.
@@ -86,6 +90,36 @@ AWS_PROFILE=my-sso-profile ./aws-enum.py loadbalancers
 
 ```bash
 ./aws-enum.py route53 --show-records --external-only
+```
+
+**Show IAM summary across all accessible accounts:**
+
+```bash
+./aws-enum.py iam
+```
+
+**List IAM users with active access keys but no MFA:**
+
+```bash
+./aws-enum.py iam --users --has-keys-only --no-mfa-only
+```
+
+**Show roles trusted by other AWS accounts or broad principals:**
+
+```bash
+./aws-enum.py iam --role-trust --external-only
+```
+
+**Export cross-account role trust findings to CSV:**
+
+```bash
+./aws-enum.py iam --role-trust --external-only --csv iam-role-trust.csv
+```
+
+**Export IAM users inactive for 90+ days to CSV:**
+
+```bash
+./aws-enum.py iam --users --inactive-days 90 --csv iam-users.csv
 ```
 
 **Export Route53 records to CSV:**

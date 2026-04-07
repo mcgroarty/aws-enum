@@ -1,9 +1,8 @@
+from __future__ import annotations
+
 """ECS container enumeration."""
 
 from datetime import datetime, timezone
-
-from .accounts import ROLE_NAME, get_enumerable_accounts, get_role_credentials
-from .client import get_client_with_credentials
 
 
 def _parse_started_at(started_at: str | datetime) -> datetime | None:
@@ -127,8 +126,9 @@ def get_ecs_tags(resource_arn: str, ecs_client) -> dict[str, str]:
 
 def enumerate_ecs(args):
     """Enumerate ECS containers across all AWS SSO accounts."""
+    from .accounts import ROLE_NAME, get_enumerable_accounts, get_role_credentials
     from .auth import get_access_token, get_sso_profile
-    from .client import set_sso_region
+    from .client import get_client_with_credentials, set_sso_region
 
     profile = get_sso_profile()
     access_token, sso_region = get_access_token(profile)

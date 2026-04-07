@@ -30,6 +30,7 @@ aws_enum/
 ├── accounts.py          # Account/role enumeration
 ├── loadbalancers.py     # ELB/ALBv2 enumeration
 ├── ecs.py               # ECS container enumeration
+├── iam.py               # IAM summary and user inventory
 ├── route53.py           # Route53 DNS enumeration
 └── cli.py               # Argparse setup, main()
 ```
@@ -61,6 +62,10 @@ Both can be overridden via command-line options (`--regions`) or by editing the 
 - `acm.describe_certificate()` - Certificate domain details
 - `ecs.list_clusters()` / `describe_tasks()` - ECS containers
 - `route53.list_hosted_zones()` / `list_resource_record_sets()` - DNS zones
+- `iam.get_account_summary()` - High-level IAM object counts
+- `iam.generate_credential_report()` / `get_credential_report()` - IAM credential activity
+- `iam.list_users()` / `list_groups_for_user()` - IAM user inventory
+- `iam.list_roles()` / `get_role()` - IAM role trust inventory and last-used data
 
 ### Organization Operations (optional)
 

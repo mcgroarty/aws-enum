@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """boto3 client management with thread-local caching."""
 
 import threading

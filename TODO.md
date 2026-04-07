@@ -293,32 +293,19 @@ Flag likely cleanup targets:
 - roles not used recently, where role last-used data is available
 - accounts with IAM users but little evidence of SSO-first access patterns
 
-### Suggested Implementation Order
+### Current Status
 
-#### Phase 1: `iam --summary` and `iam --users`
+Implemented:
+- `iam --summary`
+- `iam --users`
+- `iam --role-trust`
 
-Deliver immediate inventory value:
-- account-level IAM counts
-- credential report download and parsing
-- user inventory with access key usage, password usage, MFA, groups, and policy names
-- CSV export
-
-#### Phase 2: `iam --role-trust`
-
-Deliver the most important suspicious-access report:
-- parse trust policies
-- extract trusted external account IDs and principals
-- classify trust as internal, org, external, or wildcard
-- CSV export
-
-#### Phase 3: `iam --hygiene`
-
-Add derived findings:
-- stale users
-- admin-equivalent principals
-- inline policies
-- boundary gaps
-- suspicious naming patterns
+Remaining high-value work:
+- `iam --hygiene`
+- admin-equivalent principal detection beyond policy-name heuristics
+- permissions-boundary gap reporting
+- stale-role findings using role last-used data
+- suspicious naming-pattern and break-glass account detection
 
 ### Notes on Scale and Reliability
 
