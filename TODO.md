@@ -4,108 +4,35 @@
 
 **Goal**: Detect dangling DNS records and external/third-party targets that could indicate subdomain takeover risks or shadow IT.
 
-### The Problem
-
-Route53 records can point to:
-- **A records** → IP addresses (EC2, ELB, on-prem, third-party)
-- **CNAME records** → Domain names (ELB DNS, CloudFront, external services)
-- **ALIAS records** → AWS resources (safer - they fail if resource is deleted)
-
-We need to identify:
-1. Records pointing to resources outside our AWS accounts
-2. Dangling records pointing to deleted AWS resources (subdomain takeover risk)
-3. External/third-party services (shadow IT visibility)
-
-### Implementation Phases
-
-#### Phase 1: Show Records with External Detection (Simple, High Value)
-
-Add `--show-records` flag to `route53` command:
-- List all DNS records per zone
-- Pattern-match CNAME targets against known AWS patterns:
-  ```
-  *.elb.amazonaws.com         → Load Balancers
-  *.elb.*.amazonaws.com       → Regional ELBs
-  *.cloudfront.net            → CloudFront
-  *.s3.amazonaws.com          → S3
-  *.rds.amazonaws.com         → RDS
-  *.cache.amazonaws.com       → ElastiCache
-  ```
-- Flag any CNAME not matching `*.amazonaws.com` or `*.aws` as 🔶 External
-
-**Output example:**
-```
-=== Production (123456789012) ===
-  Hosted Zones:
-    example.com (Z1234) public 42 records
-      A     www.example.com          → 52.1.2.3
-      CNAME api.example.com          → my-alb-123.us-west-2.elb.amazonaws.com
-      CNAME mail.example.com         → mailgun.org                              🔶 External
-      CNAME shop.example.com         → shops.myshopify.com                      🔶 External
-```
+### Remaining Work
 
 #### Phase 2: Cross-Reference ELBs (Detect Dangling)
 
 Verify AWS resource CNAMEs actually exist:
 - We already enumerate ELBs across all accounts
 - Build a set of all known ELB DNS names
-- For any CNAME → `*.elb.amazonaws.com`, check if ELB exists
-- Flag as 🔴 Dangling if not found
+- For any CNAME -> `*.elb.amazonaws.com`, check if ELB exists
+- Flag as dangling if not found
 
-**Requires**: Running ELB enumeration first (or caching results)
+**Requires**: running ELB enumeration first, or sharing/caching discovered ELB DNS names
 
 #### Phase 3: IP Audit
 
-For A records pointing to public IPs:
+For `A` records pointing to public IPs:
 - Enumerate all Elastic IPs across accounts
 - Enumerate all EC2 public IPs
-- Cross-reference A record IPs against inventory
-- Flag unknown IPs as 🔶 Unknown
+- Cross-reference `A` record IPs against inventory
+- Flag unknown IPs as external or unowned
 
-**Complexity**: EC2 public IPs can be dynamic; Elastic IPs are more reliable.
-
-### Technical Notes
-
-- Route53 `ListResourceRecordSets` is paginated
-- ALIAS records have `AliasTarget` instead of `ResourceRecords`
-- Consider rate limiting for large zones
-- May want `--external-only` filter to reduce noise
-
-### AWS Patterns Reference
-
-```python
-AWS_PATTERNS = [
-    r'\.elb\.amazonaws\.com$',
-    r'\.elb\.[a-z]{2}-[a-z]+-\d\.amazonaws\.com$',
-    r'\.cloudfront\.net$',
-    r'\.s3\.amazonaws\.com$',
-    r'\.s3-[a-z]+-[a-z]+-\d\.amazonaws\.com$',
-    r'\.rds\.amazonaws\.com$',
-    r'\.cache\.amazonaws\.com$',
-    r'\.execute-api\.[a-z]{2}-[a-z]+-\d\.amazonaws\.com$',  # API Gateway
-    r'\.awsglobalaccelerator\.com$',
-]
-```
-
-### Related Reading
-
-- [Subdomain Takeover on AWS](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/domain-transfer-from-route-53.html)
-- OWASP Subdomain Takeover documentation
+**Notes**:
+- Elastic IPs are the most reliable ownership signal
+- EC2 public IPs can be dynamic, so output should indicate confidence
 
 ---
 
 ## ECS Public-Facing Detection
 
-**Goal**: Identify which ECS tasks are publicly accessible (exposed to the internet).
-
-### The Problem
-
-ECS tasks can be exposed via:
-1. **Direct public IP** - Task with `assignPublicIp: ENABLED` in a public subnet
-2. **Load Balancer** - Task registered to an ELB target group behind a public-facing ALB/NLB
-3. **API Gateway** - VPC Link to private NLB (harder to trace)
-
-Current `ecs` command shows tasks but doesn't indicate public exposure.
+**Goal**: Identify which ECS tasks are publicly accessible.
 
 ### Implementation Phases
 
@@ -113,137 +40,289 @@ Current `ecs` command shows tasks but doesn't indicate public exposure.
 
 Add network information to task output:
 - Parse `networkBindings` and `networkInterfaces` from task details
-- Show private IP (always present)
-- Show public IP (if `assignPublicIp: ENABLED`)
-
-**API calls needed:**
-- Already have task details from `ecs describe-tasks`
-- ENI details may need `ec2 describe-network-interfaces` for public IP
-
-**Output example:**
-```
-    Task abc123 (web:42) RUNNING 2h
-      Private: 10.0.1.50
-      Public:  54.1.2.3  ← Direct exposure
-```
+- Show private IP
+- Show public IP if assigned
 
 #### Phase 2: ELB Cross-Reference (`--show-exposure`)
 
-Determine if tasks are behind load balancers:
+Determine whether tasks are behind internet-facing load balancers:
+- `ecs describe-services` -> `loadBalancers[].targetGroupArn`
+- `elbv2 describe-target-health` -> target IPs/ports
+- Match task private IPs to target groups
+- `elbv2 describe-load-balancers` -> `Scheme`
 
-1. **Get target groups for ECS services:**
-   ```
-   ecs describe-services → loadBalancers[].targetGroupArn
-   ```
+#### Phase 3: Security Group Analysis
 
-2. **Get targets in each target group:**
-   ```
-   elbv2 describe-target-health --target-group-arn <arn>
-   ```
+For directly exposed tasks:
+- Resolve task ENIs
+- Inspect security groups
+- Report ports open to `0.0.0.0/0` or `::/0`
 
-3. **Match task private IPs to target group targets**
+#### Phase 4: Indirect Exposure via AWS Edge Services
 
-4. **Check if parent load balancer is internet-facing:**
-   ```
-   elbv2 describe-load-balancers → Scheme: "internet-facing" vs "internal"
-   ```
+Detect internal ALBs/NLBs that are still public via:
+- CloudFront origins
+- API Gateway VPC links
+- Global Accelerator endpoints
 
-**Output example:**
-```
-    Task abc123 (web:42) RUNNING 2h
-      Private: 10.0.1.50
-      Exposed via: my-public-alb (internet-facing)  🌐 PUBLIC
+### Candidate CLI Options
 
-    Task def456 (worker:10) RUNNING 5h
-      Private: 10.0.2.100
-      Exposed via: internal-api-nlb (internal)      🔒 INTERNAL
-```
-
-#### Phase 3: Security Group Analysis (Optional)
-
-For direct public IP exposure, check security groups:
-- Get ENI security groups from task network interface
-- Check for `0.0.0.0/0` or `::/0` ingress rules
-- Report open ports
-
-**API calls:**
-```
-ec2 describe-security-groups --group-ids <sg-ids>
-```
-
-**Output example:**
-```
-    Task abc123 (web:42) RUNNING 2h
-      Public: 54.1.2.3
-      SG ingress: 80/tcp from 0.0.0.0/0, 443/tcp from 0.0.0.0/0  ⚠️ OPEN
-```
-
-### Technical Notes
-
-- ECS services can have multiple target groups (blue/green, multiple listeners)
-- Fargate tasks may not have traditional security groups visible
-- Need to handle both EC2 and Fargate launch types
-- Consider caching ELB data if running multiple commands
-
-### Data Flow
-
-```
-ECS Service
-    ↓
-loadBalancers[].targetGroupArn
-    ↓
-Target Group → describe-target-health → IP:port targets
-    ↓
-Match task private IP
-    ↓
-describe-load-balancers → Scheme (internet-facing/internal)
-```
-
-### CLI Options
-
-```
+```text
 --show-network     Show task network details (private/public IPs)
 --show-exposure    Cross-reference with ELBs to show public exposure
 --public-only      Only show publicly exposed tasks
 ```
 
-#### Phase 4: Indirect Exposure via CDN/API Gateway (Optional)
+---
 
-ALBs with `Scheme: internal` can still be publicly accessible if fronted by:
+## IAM Audit Command Proposal
 
-1. **CloudFront** - CDN with internal ALB as origin (most likely)
-2. **API Gateway** - VPC Link to internal NLB
-3. **Global Accelerator** - Anycast IPs routing to ALB/NLB
+**Goal**: Add an `iam` command for cross-account IAM reporting, with terminal-friendly summaries and CSV export for triage and offline review.
 
-**CloudFront detection (highest priority):**
-```
-cloudfront list-distributions
-  → Origins[].DomainName
-  → Match against known ALB DNS names
-```
+### Recommended CLI Shape
 
-**API Gateway detection:**
-```
-apigateway get-rest-apis
-apigatewayv2 get-apis
-apigateway get-vpc-links / apigatewayv2 get-vpc-links
-  → Find NLB targets
+Keep the current top-level CLI pattern and add a single `iam` command with report-selection flags rather than deeply nested subcommands.
+
+Recommended usage:
+
+```text
+./aws-enum.py iam --users
+./aws-enum.py iam --role-trust --external-only
+./aws-enum.py iam --hygiene --inactive-days 90
+./aws-enum.py iam --summary
+./aws-enum.py iam --users --csv iam-users.csv
+./aws-enum.py iam --role-trust --csv iam-role-trust.csv
 ```
 
-**Global Accelerator detection:**
-```
-globalaccelerator list-accelerators
-  → list-listeners
-  → list-endpoint-groups
-  → Match ALB/NLB ARNs
+Recommended report selectors:
+
+```text
+--users         IAM users inventory
+--role-trust    Cross-account and suspicious trust policies
+--hygiene       Stale credentials and risky IAM patterns
+--summary       Account-level IAM counts and quick signals
 ```
 
-**Output example:**
-```
-    Task abc123 (web:42) RUNNING 2h
-      Private: 10.0.1.50
-      Exposed via: internal-alb (internal)
-        ↳ CloudFront: d1234.cloudfront.net  🌐 PUBLIC
+Suggested shared flags:
+
+```text
+--accounts              Comma-separated account names or IDs
+--csv FILE              Export flat results to CSV
+--summary-only          Print only counts and key findings
+--inactive-days N       Threshold for stale credential checks
+--external-only         Only show external cross-account trust
+--admin-only            Only show admin-equivalent principals
+--no-mfa-only           Only show identities without MFA
+--has-keys-only         Only show users with access keys
+--first-only            Stop after first account with findings
 ```
 
-This would catch cases where internal ALBs are actually internet-accessible through AWS edge services.
+### Core Reports
+
+#### IAM Users Inventory
+
+List users across all accounts, including:
+- user name and ARN
+- password enabled / console access
+- access key count
+- access key last used
+- user last used date where available
+- attached policies and group membership
+- quick permission summary:
+  - `AdministratorAccess`
+  - power-user style broad access
+  - read-only only
+  - custom / unknown
+
+Useful flags:
+
+```text
+--csv users.csv
+--inactive-days 90
+--no-mfa-only
+--has-keys-only
+```
+
+Suggested CSV columns:
+
+```text
+account_name,account_id,user_name,user_arn,created_at,password_enabled,
+password_last_used,mfa_active,access_key_1_active,access_key_1_last_used,
+access_key_2_active,access_key_2_last_used,groups,attached_policies,
+inline_policy_count,permissions_boundary,permission_summary
+```
+
+#### Cross-Account Role Trust Report
+
+Find roles that may be assumable by principals outside the account or organization:
+- parse trust policies for `AWS` principals not in the current account
+- flag wildcard or broad trust where present
+- identify trusted account IDs
+- highlight missing `ExternalId` conditions for third-party style access
+- show whether trust is internal org, known external account, or ambiguous
+
+Useful flags:
+
+```text
+--csv cross-account-roles.csv
+--external-only
+--org-id o-xxxxxxxxxx
+```
+
+Suggested CSV columns:
+
+```text
+account_name,account_id,role_name,role_arn,trusted_principal_type,
+trusted_principal,trusted_account_id,is_external,has_external_id_condition,
+has_org_condition,trust_risk,notes
+```
+
+#### Access Hygiene Report
+
+Surface suspicious or forgotten access paths:
+- users with old but still-active access keys
+- users with console passwords but no recent use
+- users without MFA
+- roles unused for long periods, where last-used data is available
+- customer-managed policies granting `*` or near-admin access
+- roles/users with inline policies
+- service accounts or break-glass style identities by name pattern
+
+Suggested CSV columns:
+
+```text
+account_name,account_id,finding_type,resource_type,resource_name,
+severity,last_used,details
+```
+
+### Additional IAM Audit Ideas
+
+- Account-level IAM summary:
+  - count of users, groups, roles, policies, active access keys, and MFA coverage
+- Credential report ingestion:
+  - use IAM credential reports to capture password state, key age, and last used data consistently
+- Permission boundaries report:
+  - find users and roles without boundaries in accounts that appear to rely on delegation
+- Federated access inventory:
+  - SAML/OIDC providers and roles intended for federation
+- AssumeRole reachability map:
+  - export edges between trusted and trusting accounts for graphing suspicious paths
+- Admin-equivalent principals report:
+  - principals with `AdministratorAccess`, `iam:*`, `sts:AssumeRole` into admin roles, or similarly broad privilege
+
+### Suggested Output Shapes
+
+- Human-readable grouped output by account for quick terminal triage
+- `--csv FILE` for flat exports
+- `--summary` for high-level counts only
+- `--accounts` filter to focus on suspicious environments first
+- optional `--first-only` for debugging consistency with other commands
+
+### Why This Helps
+
+This command would make it easier to answer:
+- Which old IAM users still exist, and do they still have working credentials?
+- Which accounts trust other AWS accounts, especially unknown external ones?
+- Which identities have broad permissions that do not fit an SSO-first model?
+- Which accounts look abandoned, inconsistent, or manually managed outside the current SSO setup?
+
+### AWS APIs and Data Sources
+
+#### Shared IAM Enumeration
+
+- `iam.list_users`
+- `iam.list_roles`
+- `iam.list_groups`
+- `iam.list_policies` for customer-managed policy inventory
+- `iam.get_account_summary` for high-level counts
+
+#### User and Credential Data
+
+- `iam.generate_credential_report`
+- `iam.get_credential_report`
+- `iam.list_access_keys`
+- `iam.get_access_key_last_used`
+- `iam.list_mfa_devices`
+- `iam.list_attached_user_policies`
+- `iam.list_user_policies`
+- `iam.list_groups_for_user`
+- `iam.get_user`
+
+Notes:
+- The credential report should be the primary source for password enabled, password last used, access key age, and MFA presence.
+- `get_access_key_last_used` is useful for fresh per-key enrichment when the credential report is incomplete or stale.
+
+#### Role Trust and Privilege Data
+
+- `iam.get_role`
+- `iam.list_attached_role_policies`
+- `iam.list_role_policies`
+- `iam.get_policy`
+- `iam.get_policy_version`
+- `iam.get_service_last_accessed_details` only if we later choose to enrich with Access Advisor style data
+
+Notes:
+- Trust analysis comes from the role's `AssumeRolePolicyDocument`.
+- Permission summaries can start with heuristic classification of attached policy names and inline policy statements.
+
+### Detection Heuristics
+
+#### Permission Summary
+
+Classify users and roles into rough buckets for reporting:
+- admin-equivalent: `AdministratorAccess`, wildcard `Action` with broad `Resource`, or strong IAM/STS privilege
+- power-user style: broad service permissions without explicit IAM administration
+- read-only: `ReadOnlyAccess` or obviously read-oriented actions
+- custom/unknown: anything that needs manual review
+
+#### Cross-Account Trust Risk
+
+Flag higher-risk trust patterns:
+- explicit trusted AWS account outside the current org
+- `arn:aws:iam::*:root`
+- wildcard principal
+- missing `sts:ExternalId` for vendor-like trust
+- no limiting conditions such as org ID, source ARN, source account, or principal tags
+
+#### Forgotten Access Signals
+
+Flag likely cleanup targets:
+- IAM users with active keys and no recent key use
+- console-enabled users with no recent password use
+- users with no MFA and any active credential
+- roles not used recently, where role last-used data is available
+- accounts with IAM users but little evidence of SSO-first access patterns
+
+### Suggested Implementation Order
+
+#### Phase 1: `iam --summary` and `iam --users`
+
+Deliver immediate inventory value:
+- account-level IAM counts
+- credential report download and parsing
+- user inventory with access key usage, password usage, MFA, groups, and policy names
+- CSV export
+
+#### Phase 2: `iam --role-trust`
+
+Deliver the most important suspicious-access report:
+- parse trust policies
+- extract trusted external account IDs and principals
+- classify trust as internal, org, external, or wildcard
+- CSV export
+
+#### Phase 3: `iam --hygiene`
+
+Add derived findings:
+- stale users
+- admin-equivalent principals
+- inline policies
+- boundary gaps
+- suspicious naming patterns
+
+### Notes on Scale and Reliability
+
+- IAM is mostly global per account, so this command should not need the `--regions` option.
+- Credential report generation can take time; cache the downloaded report in memory per account during a single run.
+- CSV exports should be flat and stable so they can be diffed between runs.
+- Terminal output should default to concise findings, with account headers and only a few top-risk rows unless explicitly expanded later.
